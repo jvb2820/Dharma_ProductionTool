@@ -20,6 +20,7 @@
 .brand {
   display: inline-flex;
   align-items: center;
+  gap: 12px;
   min-height: 44px;
   color: var(--green);
   font-size: clamp(1.25rem, 2.1vw, 1.9rem);
@@ -27,6 +28,17 @@
   line-height: 1;
   text-transform: uppercase;
   text-decoration: none;
+}
+
+.brand img {
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+.brand span {
+  line-height: 1;
 }
 
 .brand:focus-visible {

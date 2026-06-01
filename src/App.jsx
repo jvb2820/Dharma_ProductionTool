@@ -20,7 +20,8 @@ function App() {
     <main className="app-shell">
       <header className="topbar" aria-label="Primary">
         <a className="brand" href="/" aria-label="Production Tool Home">
-          Production Tool
+          <img src="/logo1.png" alt="" />
+          <span>Production Tool</span>
         </a>
         <nav className="nav-tabs" aria-label="Dashboard">
           {tabs.map((tab) => (
