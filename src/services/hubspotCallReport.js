@@ -182,7 +182,7 @@ export async function loadHubSpotCallReport(date) {
   }
 
   const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), 90000)
+  const timeoutId = window.setTimeout(() => controller.abort(), 180000)
   let response
 
   try {
@@ -200,7 +200,18 @@ export async function loadHubSpotCallReport(date) {
   }
 
   if (!response.ok) {
-    throw new Error(`HubSpot report request failed: ${response.status}`)
+    let errorMessage = `HubSpot report request failed: ${response.status}`
+
+    try {
+      const payload = await response.json()
+      if (payload?.message) {
+        errorMessage = `${errorMessage} - ${payload.message}`
+      }
+    } catch {
+      // Keep the status-only message if the server did not return JSON.
+    }
+
+    throw new Error(errorMessage)
   }
 
   const payload = await response.json()
