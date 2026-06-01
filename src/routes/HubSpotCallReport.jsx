@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { loadHubSpotCallReport } from '../services/hubspotCallReport'
 
 const reportTimeZone = 'America/New_York'
+const defaultAverageRuntimeMs = 45000
+const averageRuntimeCacheKey = 'hubspot-call-report-average-runtime-ms'
 
 function getNewYorkDate(offsetDays = 0) {
   const date = new Date()
@@ -82,6 +84,34 @@ function getTimeZoneLabel() {
   }).formatToParts(new Date()).find((part) => part.type === 'timeZoneName')?.value ?? 'ET'
 }
 
+function formatDuration(milliseconds) {
+  const totalSeconds = Math.max(1, Math.round(milliseconds / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+
+  if (minutes === 0) return `${seconds}s`
+
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`
+}
+
+function readAverageRuntimeMs() {
+  try {
+    const cachedValue = Number(window.sessionStorage.getItem(averageRuntimeCacheKey))
+
+    return Number.isFinite(cachedValue) && cachedValue > 0 ? cachedValue : defaultAverageRuntimeMs
+  } catch {
+    return defaultAverageRuntimeMs
+  }
+}
+
+function writeAverageRuntimeMs(value) {
+  try {
+    window.sessionStorage.setItem(averageRuntimeCacheKey, String(Math.round(value)))
+  } catch {
+    // Timing stats are optional; loading still works without session storage.
+  }
+}
+
 function getMeetingName(slot) {
   return slot.meetingName || `${slot.clientName || 'Client'} Analysis with Dharma Clinic`
 }
@@ -112,13 +142,29 @@ function HubSpotCallReport() {
   const [selectedDate, setSelectedDate] = useState(() => getNewYorkDate(-1))
   const [status, setStatus] = useState('loading')
   const [error, setError] = useState('')
+  const [loadingStartedAt, setLoadingStartedAt] = useState(() => Date.now())
+  const [loadingElapsedMs, setLoadingElapsedMs] = useState(0)
+  const [averageRuntimeMs, setAverageRuntimeMs] = useState(() => readAverageRuntimeMs())
+  const averageRuntimeRef = useRef(averageRuntimeMs)
+
+  const recordRuntime = useCallback((durationMs) => {
+    const nextAverageMs = (averageRuntimeRef.current * 0.7) + (durationMs * 0.3)
+
+    averageRuntimeRef.current = nextAverageMs
+    setAverageRuntimeMs(nextAverageMs)
+    writeAverageRuntimeMs(nextAverageMs)
+  }, [])
 
   useEffect(() => {
     let isMounted = true
+    const startedAt = Date.now()
 
     loadHubSpotCallReport(selectedDate)
       .then((data) => {
         if (!isMounted) return
+        if (data.cacheSource !== 'session') {
+          recordRuntime(Date.now() - startedAt)
+        }
         setReport(data)
         setStatus('ready')
       })
@@ -131,14 +177,53 @@ function HubSpotCallReport() {
     return () => {
       isMounted = false
     }
-  }, [selectedDate])
+  }, [recordRuntime, selectedDate])
+
+  useEffect(() => {
+    if (status !== 'loading') return undefined
+
+    const updateElapsed = () => {
+      setLoadingElapsedMs(Date.now() - loadingStartedAt)
+    }
+    const intervalId = window.setInterval(updateElapsed, 500)
+
+    updateElapsed()
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [loadingStartedAt, status])
 
   function updateSelectedDate(nextDate) {
     if (nextDate === selectedDate) return
 
+    const startedAt = Date.now()
+
     setStatus('loading')
     setError('')
+    setLoadingStartedAt(startedAt)
+    setLoadingElapsedMs(0)
     setSelectedDate(nextDate)
+  }
+
+  function refreshSelectedDate() {
+    const startedAt = Date.now()
+
+    setStatus('loading')
+    setError('')
+    setLoadingStartedAt(startedAt)
+    setLoadingElapsedMs(0)
+
+    loadHubSpotCallReport(selectedDate, { forceRefresh: true })
+      .then((data) => {
+        recordRuntime(Date.now() - startedAt)
+        setReport(data)
+        setStatus('ready')
+      })
+      .catch((loadError) => {
+        setError(loadError.message)
+        setStatus('error')
+      })
   }
 
   const scheduleRows = useMemo(() => {
@@ -196,6 +281,10 @@ function HubSpotCallReport() {
   const confirmedRate = scheduleRows.length > 0
     ? Math.round((totalConfirmedAppointments / scheduleRows.length) * 100)
     : 0
+  const loadingPercent = status === 'loading'
+    ? Math.min(96, Math.max(5, Math.round((loadingElapsedMs / averageRuntimeMs) * 100)))
+    : 100
+  const remainingRuntimeMs = Math.max(0, averageRuntimeMs - loadingElapsedMs)
 
   useEffect(() => {
     const tableScroller = tableScrollRef.current
@@ -284,6 +373,14 @@ function HubSpotCallReport() {
         >
           Today
         </button>
+        <button
+          className="filter-button"
+          disabled={status === 'loading'}
+          type="button"
+          onClick={refreshSelectedDate}
+        >
+          Refresh
+        </button>
       </div>
 
       {status === 'error' && <div className="report-alert">{error}</div>}
@@ -358,9 +455,26 @@ function HubSpotCallReport() {
       <div className="report-panel readable-report-panel">
         {status === 'loading' && (
           <div className="hubspot-loading" role="status" aria-live="polite">
-            <div className="hubspot-loading-text">Loading HubSpot appointments and outbound calls...</div>
-            <div className="hubspot-progress" aria-hidden="true">
-              <span />
+            <div className="hubspot-loading-header">
+              <div>
+                <div className="hubspot-loading-text">Loading HubSpot appointments and outbound calls...</div>
+                <div className="hubspot-loading-meta">
+                  <span>Elapsed {formatDuration(loadingElapsedMs)}</span>
+                  <span>Average {formatDuration(averageRuntimeMs)}</span>
+                  <span>ETA {formatDuration(remainingRuntimeMs)}</span>
+                </div>
+              </div>
+              <strong>{loadingPercent}%</strong>
+            </div>
+            <div
+              aria-label={`Loading ${loadingPercent}%`}
+              aria-valuemax="100"
+              aria-valuemin="0"
+              aria-valuenow={loadingPercent}
+              className="hubspot-progress"
+              role="progressbar"
+            >
+              <span style={{ width: `${loadingPercent}%` }} />
             </div>
           </div>
         )}

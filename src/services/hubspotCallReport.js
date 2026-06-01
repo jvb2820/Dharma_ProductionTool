@@ -8,6 +8,8 @@ const agentRoster = [
 
 const reportTimes = ['2:00 AM', '2:20 AM', '2:30 AM', '2:40 AM', '3:00 AM', '3:20 AM', '3:30 AM']
 const reportTimeZone = 'America/New_York'
+const sessionCachePrefix = 'hubspot-call-report'
+const sessionCacheVersion = 'v1'
 
 function getYesterdayDate() {
   const yesterday = new Date()
@@ -154,6 +156,28 @@ function normalizeHubSpotCall(call) {
   }
 }
 
+function getSessionCacheKey(date) {
+  return `${sessionCachePrefix}:${sessionCacheVersion}:${date ?? 'default'}`
+}
+
+function readCachedReport(date) {
+  try {
+    const cachedValue = window.sessionStorage.getItem(getSessionCacheKey(date))
+
+    return cachedValue ? JSON.parse(cachedValue) : null
+  } catch {
+    return null
+  }
+}
+
+function writeCachedReport(date, report) {
+  try {
+    window.sessionStorage.setItem(getSessionCacheKey(date), JSON.stringify(report))
+  } catch {
+    // The app can still work if session storage is disabled or full.
+  }
+}
+
 export function getAgentRoster() {
   return agentRoster
 }
@@ -164,7 +188,7 @@ export function getReportSlots(date) {
   return reportTimes.map((time) => ({ date: reportDate, time }))
 }
 
-export async function loadHubSpotCallReport(date) {
+export async function loadHubSpotCallReport(date, options = {}) {
   const endpoint = import.meta.env.VITE_HUBSPOT_CALL_REPORT_URL
 
   if (!endpoint) {
@@ -176,9 +200,21 @@ export async function loadHubSpotCallReport(date) {
     }
   }
 
+  const cachedReport = options.forceRefresh ? null : readCachedReport(date)
+  if (cachedReport) {
+    return {
+      ...cachedReport,
+      source: cachedReport.source ?? 'hubspot',
+      cacheSource: 'session',
+    }
+  }
+
   const requestUrl = new URL(endpoint, window.location.origin)
   if (date) {
     requestUrl.searchParams.set('date', date)
+  }
+  if (options.forceRefresh) {
+    requestUrl.searchParams.set('refresh', '1')
   }
 
   const controller = new AbortController()
@@ -216,12 +252,16 @@ export async function loadHubSpotCallReport(date) {
 
   const payload = await response.json()
   const records = Array.isArray(payload) ? payload : payload.results ?? payload.rows ?? []
-
-  return {
+  const report = {
     source: 'hubspot',
     rows: records.map(normalizeHubSpotCall),
     callerAnalytics: payload.callerAnalytics ?? [],
     reportDate: payload.reportDate ?? getYesterdayDate(),
     updatedAt: payload.updatedAt ?? new Date().toISOString(),
+    cacheSource: 'network',
   }
+
+  writeCachedReport(date, report)
+
+  return report
 }

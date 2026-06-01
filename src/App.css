@@ -667,42 +667,54 @@
   margin: 2px 0 18px;
 }
 
-.hubspot-loading-text {
+.hubspot-loading-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
   margin-bottom: 8px;
+}
+
+.hubspot-loading-header strong {
+  min-width: 48px;
+  color: #005c53;
+  font-size: 0.95rem;
+  font-weight: 900;
+  line-height: 1.2;
+  text-align: right;
+}
+
+.hubspot-loading-text {
   color: #33475b;
   font-size: 0.82rem;
   font-weight: 800;
+}
+
+.hubspot-loading-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 5px;
+  color: #516f90;
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .hubspot-progress {
   position: relative;
   height: 8px;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: 4px;
   background: #eaf0f6;
 }
 
 .hubspot-progress span {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 38%;
+  display: block;
+  height: 100%;
   border-radius: inherit;
-  background: #00a4bd;
-  animation: hubspot-progress-slide 1.2s ease-in-out infinite;
-}
-
-@keyframes hubspot-progress-slide {
-  0% {
-    transform: translateX(-110%);
-  }
-
-  50% {
-    transform: translateX(95%);
-  }
-
-  100% {
-    transform: translateX(280%);
-  }
+  background: linear-gradient(90deg, #00a4bd, #32d0c6);
+  transition: width 240ms ease;
 }
 
 .table-scroll-controls {

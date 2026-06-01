@@ -11,7 +11,8 @@ const connectedDispositionId = 'f240bbac-87c9-4f6e-bf70-924b57d47db7'
 const defaultAllowedOrigins = ['http://127.0.0.1:5173', 'http://localhost:5173']
 const reportTimeZone = process.env.HUBSPOT_REPORT_TIMEZONE ?? 'America/New_York'
 const reportCache = new Map()
-const reportCacheTtlMs = 5 * 60 * 1000
+const currentDateCacheTtlMs = 5 * 60 * 1000
+const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
 const inFlightReports = new Map()
 const hubspotMaxAttempts = 6
 const hubspotRequestSpacingMs = 700
@@ -156,6 +157,10 @@ function getReportDateRange(selectedDate) {
     priorFromMs: String(fromDate.getTime() - 48 * 60 * 60 * 1000),
     toMs: String(toDate.getTime()),
   }
+}
+
+function getReportCacheTtlMs(reportDate) {
+  return reportDate === getZonedDate(new Date()) ? currentDateCacheTtlMs : pastDateCacheTtlMs
 }
 
 function displayDate(value) {
@@ -513,10 +518,11 @@ const server = createServer(async (request, response) => {
 
   if (requestUrl.pathname === '/api/hubspot/call-report' && request.method === 'GET') {
     const selectedDate = requestUrl.searchParams.get('date')
+    const forceRefresh = requestUrl.searchParams.get('refresh') === '1'
     const cacheKey = selectedDate || 'default'
     const cachedReport = reportCache.get(cacheKey)
 
-    if (cachedReport && Date.now() - cachedReport.cachedAt < reportCacheTtlMs) {
+    if (!forceRefresh && cachedReport && Date.now() - cachedReport.cachedAt < (cachedReport.ttlMs ?? currentDateCacheTtlMs)) {
       sendJson(request, response, 200, cachedReport.payload)
       return
     }
@@ -540,6 +546,7 @@ const server = createServer(async (request, response) => {
 
       reportCache.set(cacheKey, {
         cachedAt: Date.now(),
+        ttlMs: getReportCacheTtlMs(report.reportDate),
         payload,
       })
       sendJson(request, response, 200, payload)
