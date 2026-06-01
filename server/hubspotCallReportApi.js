@@ -12,6 +12,7 @@ const defaultAllowedOrigins = ['http://127.0.0.1:5173', 'http://localhost:5173']
 const reportTimeZone = process.env.HUBSPOT_REPORT_TIMEZONE ?? 'America/New_York'
 const reportCache = new Map()
 const reportCacheTtlMs = 5 * 60 * 1000
+const hubspotMaxAttempts = 4
 
 const allowedOrigins = readAllowedOrigins()
 
@@ -226,21 +227,39 @@ async function hubspotFetch(path, options = {}) {
     throw new Error('Missing HUBSPOT_PRIVATE_APP_TOKEN')
   }
 
-  const response = await fetch(`${hubspotBaseUrl}${path}`, {
-    method: options.method ?? 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  })
+  for (let attempt = 1; attempt <= hubspotMaxAttempts; attempt += 1) {
+    const response = await fetch(`${hubspotBaseUrl}${path}`, {
+      method: options.method ?? 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    })
 
-  if (!response.ok) {
+    if (response.ok) {
+      return response.json()
+    }
+
     const body = await response.text()
-    throw new Error(`HubSpot request failed (${response.status}): ${body}`)
-  }
 
-  return response.json()
+    if (response.status !== 429 || attempt === hubspotMaxAttempts) {
+      throw new Error(`HubSpot request failed (${response.status}): ${body}`)
+    }
+
+    const retryAfterSeconds = Number(response.headers.get('retry-after'))
+    const retryDelayMs = Number.isFinite(retryAfterSeconds)
+      ? retryAfterSeconds * 1000
+      : attempt * 1250
+
+    await delay(retryDelayMs)
+  }
+}
+
+function delay(milliseconds) {
+  return new Promise((resolveDelay) => {
+    setTimeout(resolveDelay, milliseconds)
+  })
 }
 
 async function hubspotSearch(objectType, body) {
@@ -407,11 +426,9 @@ function buildCallerAnalytics(rows) {
 }
 
 async function buildCallReport(selectedDate) {
-  const [owners, scheduleResult, outboundCalls] = await Promise.all([
-    loadOwners(),
-    loadScheduledContactsForDate(selectedDate),
-    loadOutboundCallsForDate(selectedDate),
-  ])
+  const owners = await loadOwners()
+  const scheduleResult = await loadScheduledContactsForDate(selectedDate)
+  const outboundCalls = await loadOutboundCallsForDate(selectedDate)
   const calls = outboundCalls.map((call) => normalizeCall(call, owners))
   const rows = scheduleResult.rows
     .map((meeting) => {
