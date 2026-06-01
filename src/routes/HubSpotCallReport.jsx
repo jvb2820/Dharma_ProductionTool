@@ -1,0 +1,456 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { loadHubSpotCallReport } from '../services/hubspotCallReport'
+
+const reportTimeZone = 'America/New_York'
+
+function getNewYorkDate(offsetDays = 0) {
+  const date = new Date()
+  date.setDate(date.getDate() + offsetDays)
+
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: reportTimeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const part = (type) => parts.find((item) => item.type === type)?.value ?? ''
+
+  return `${part('year')}-${part('month')}-${part('day')}`
+}
+
+function formatDate(value) {
+  if (value?.includes('/')) return value
+
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: reportTimeZone,
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  }).format(new Date(`${value}T12:00:00Z`))
+}
+
+function formatWeekday(value) {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: reportTimeZone,
+    weekday: 'long',
+  }).format(
+    new Date(`${value}T12:00:00Z`),
+  )
+}
+
+function parseReportDate(value) {
+  if (!value) return null
+  if (value.includes('/')) {
+    const [month, day, year] = value.split('/').map(Number)
+
+    return new Date(year, month - 1, day)
+  }
+
+  return new Date(`${value}T00:00:00`)
+}
+
+function formatActivityDate(slot) {
+  const activityDate = slot.scheduledAt
+    ? new Date(slot.scheduledAt)
+    : parseReportDate(slot.date)
+
+  if (!activityDate || Number.isNaN(activityDate.getTime())) return '-'
+
+  const formattedDate = new Intl.DateTimeFormat('en-US', {
+    timeZone: reportTimeZone,
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(activityDate)
+
+  return formattedDate.replace(',', ',')
+}
+
+function getDateGroupLabel(value) {
+  if (value === getNewYorkDate()) return 'TODAY'
+  if (value === getNewYorkDate(-1)) return 'YESTERDAY'
+
+  return formatDate(value)
+}
+
+function getTimeZoneLabel() {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: reportTimeZone,
+    timeZoneName: 'short',
+  }).formatToParts(new Date()).find((part) => part.type === 'timeZoneName')?.value ?? 'ET'
+}
+
+function getMeetingName(slot) {
+  return slot.meetingName || `${slot.clientName || 'Client'} Analysis with Dharma Clinic`
+}
+
+function getMeetingDescription(slot) {
+  return slot.meetingDescription || [
+    slot.clientName ? `Name: ${slot.clientName}` : '',
+    slot.clientEmail ? `Email: ${slot.clientEmail}` : '',
+    slot.phoneNumber ? `Phone: ${slot.phoneNumber}` : '',
+  ].filter(Boolean).join('')
+}
+
+function isCancelledMeeting(value) {
+  return /\bcancell?ed\b|\bcancelad[ao]\b|\bcancel/i.test(String(value ?? ''))
+}
+
+function HubSpotCallReport() {
+  const topScrollRef = useRef(null)
+  const tableScrollRef = useRef(null)
+  const topScrollContentRef = useRef(null)
+  const [report, setReport] = useState({
+    source: 'sample',
+    rows: [],
+    callerAnalytics: [],
+    reportDate: null,
+    updatedAt: null,
+  })
+  const [selectedDate, setSelectedDate] = useState(() => getNewYorkDate(-1))
+  const [status, setStatus] = useState('loading')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let isMounted = true
+
+    loadHubSpotCallReport(selectedDate)
+      .then((data) => {
+        if (!isMounted) return
+        setReport(data)
+        setStatus('ready')
+      })
+      .catch((loadError) => {
+        if (!isMounted) return
+        setError(loadError.message)
+        setStatus('error')
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [selectedDate])
+
+  function updateSelectedDate(nextDate) {
+    if (nextDate === selectedDate) return
+
+    setStatus('loading')
+    setError('')
+    setSelectedDate(nextDate)
+  }
+
+  const scheduleRows = useMemo(() => {
+    return report.rows.map((row) => {
+      const meetingName = row.meetingName
+      const callerName = row.callerName
+      const cancelled = isCancelledMeeting(meetingName)
+
+      return {
+        rowId: row.rowId,
+        meetingName,
+        meetingDescription: row.meetingDescription,
+        date: row.date,
+        time: row.time,
+        clientName: row.clientName,
+        clientEmail: row.clientEmail,
+        phoneNumber: row.phoneNumber,
+        scheduledAgent: row.scheduledAgent,
+        scheduledAt: row.scheduledAt,
+        callerName,
+        called: callerName ? 'Called' : 'Not Called',
+        calledDetail: callerName
+          ? row.calledDetail || 'Outbound caller found before the appointment'
+          : row.calledDetail || 'No qualifying outbound call found',
+        confirmation: cancelled ? 'Not Confirmed' : 'Confirmed',
+        confirmationDetail: cancelled
+          ? 'Meeting name indicates the appointment was cancelled'
+          : 'Meeting name does not indicate cancellation',
+      }
+    })
+  }, [report.rows])
+
+  const reportDateLabel = report.reportDate ? formatDate(report.reportDate) : ''
+  const reportWeekday = report.reportDate ? formatWeekday(report.reportDate) : 'Loading'
+  const timeZoneLabel = getTimeZoneLabel()
+  const callerAnalytics = useMemo(() => {
+    const rows = report.callerAnalytics ?? []
+    const maxCalls = Math.max(...rows.map((row) => row.called), 1)
+
+    return rows.map((row) => ({
+      ...row,
+      calledWidth: `${Math.max((row.called / maxCalls) * 100, 4)}%`,
+      confirmedWidth: `${Math.max((row.confirmed / maxCalls) * 100, row.confirmed > 0 ? 4 : 0)}%`,
+    }))
+  }, [report.callerAnalytics])
+  const totalConfirmedAppointments = useMemo(() => {
+    return scheduleRows.filter((row) => row.confirmation === 'Confirmed').length
+  }, [scheduleRows])
+  const totalCalledAppointments = useMemo(() => {
+    return scheduleRows.filter((row) => row.called === 'Called').length
+  }, [scheduleRows])
+  const calledRate = scheduleRows.length > 0
+    ? Math.round((totalCalledAppointments / scheduleRows.length) * 100)
+    : 0
+  const confirmedRate = scheduleRows.length > 0
+    ? Math.round((totalConfirmedAppointments / scheduleRows.length) * 100)
+    : 0
+
+  useEffect(() => {
+    const tableScroller = tableScrollRef.current
+    const topScroller = topScrollRef.current
+    const topScrollContent = topScrollContentRef.current
+
+    if (!tableScroller || !topScroller || !topScrollContent) return undefined
+
+    topScrollContent.style.width = `${tableScroller.scrollWidth}px`
+
+    const syncTop = () => {
+      topScroller.scrollLeft = tableScroller.scrollLeft
+    }
+    const syncTable = () => {
+      tableScroller.scrollLeft = topScroller.scrollLeft
+    }
+
+    tableScroller.addEventListener('scroll', syncTop)
+    topScroller.addEventListener('scroll', syncTable)
+
+    return () => {
+      tableScroller.removeEventListener('scroll', syncTop)
+      topScroller.removeEventListener('scroll', syncTable)
+    }
+  }, [scheduleRows.length, status])
+
+  function scrollTable(direction) {
+    const tableScroller = tableScrollRef.current
+    const topScroller = topScrollRef.current
+    const target = tableScroller || topScroller
+
+    if (!target) return
+
+    target.scrollBy({
+      left: direction * 360,
+      behavior: 'smooth',
+    })
+  }
+
+  return (
+    <section className="route-view" aria-label="Daily appointments">
+      <div className="report-toolbar">
+        <div>
+          <h1>Daily Appointments</h1>
+          <p>
+            {reportWeekday} appointments
+            {reportDateLabel ? ` - ${reportDateLabel}` : ''}
+            {' '}
+            ({timeZoneLabel})
+          </p>
+        </div>
+        <div className="report-stats" aria-label="Report totals">
+          <span>
+            <strong>{scheduleRows.length}</strong>
+            Appointments
+          </span>
+          <span>
+            <strong>{report.source === 'hubspot' ? 'Live' : 'Sample'}</strong>
+            Source
+          </span>
+        </div>
+      </div>
+
+      <div className="report-filters" aria-label="Report filters">
+        <span className="filter-label">Activity date</span>
+        <span className="timezone-pill">{timeZoneLabel}</span>
+        <input
+          aria-label="Activity date"
+          className="date-filter-input"
+          max="9999-12-31"
+          type="date"
+          value={selectedDate}
+          onChange={(event) => updateSelectedDate(event.target.value)}
+        />
+        <button
+          className="filter-button"
+          type="button"
+          onClick={() => updateSelectedDate(getNewYorkDate(-1))}
+        >
+          Yesterday
+        </button>
+        <button
+          className="filter-button"
+          type="button"
+          onClick={() => updateSelectedDate(getNewYorkDate())}
+        >
+          Today
+        </button>
+      </div>
+
+      {status === 'error' && <div className="report-alert">{error}</div>}
+
+      {status !== 'loading' && (
+        <section className="analytics-panel" aria-label="Appointment analytics">
+          <div className="caller-analytics-header">
+            <div>
+              <h2>Appointment Analytics</h2>
+                <p>Calls count when a matching outbound call is found before the appointment.</p>
+            </div>
+            <span>{timeZoneLabel}</span>
+          </div>
+          <div className="analytics-summary-grid">
+            <div className="analytics-total-card appointments">
+              <span>Appointments</span>
+              <strong>{scheduleRows.length}</strong>
+              <small>Meetings fetched for the selected timeframe</small>
+              <div className="metric-rail" aria-hidden="true">
+                <span style={{ width: scheduleRows.length > 0 ? '100%' : '0%' }} />
+              </div>
+            </div>
+            <div className="analytics-total-card called">
+              <span>Called</span>
+              <strong>{totalCalledAppointments}</strong>
+              <small>Appointments with a qualifying outbound caller</small>
+              <div className="metric-rail" aria-hidden="true">
+                <span style={{ width: `${calledRate}%` }} />
+              </div>
+            </div>
+            <div className="analytics-total-card confirmed">
+              <span>Confirmed</span>
+              <strong>{totalConfirmedAppointments}</strong>
+              <small>Appointments without cancellation in the meeting name</small>
+              <div className="metric-rail" aria-hidden="true">
+                <span style={{ width: `${confirmedRate}%` }} />
+              </div>
+            </div>
+          </div>
+          <div className="caller-performance-grid">
+            {callerAnalytics.length === 0 && (
+              <div className="analytics-empty">No qualifying outbound callers found for this date.</div>
+            )}
+            {callerAnalytics.map((caller) => (
+              <article className="caller-performance-card" key={caller.callerName}>
+                <div className="caller-performance-header">
+                  <h3 title={caller.callerName}>{caller.callerName}</h3>
+                  <span>{caller.called} calls</span>
+                </div>
+                <div className="caller-bar-stack">
+                  <div className="caller-metric-line">
+                    <span>Total Calls</span>
+                    <div className="caller-bar-track" title={`${caller.called} qualifying calls`}>
+                      <div className="caller-bar-fill called" style={{ width: caller.calledWidth }} />
+                    </div>
+                    <strong>{caller.called}</strong>
+                  </div>
+                  <div className="caller-metric-line">
+                    <span>Confirmed</span>
+                    <div className="caller-bar-track" title={`${caller.confirmed} confirmed appointments`}>
+                      <div className="caller-bar-fill confirmed" style={{ width: caller.confirmedWidth }} />
+                    </div>
+                    <strong>{caller.confirmed}</strong>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <div className="report-panel readable-report-panel">
+        {status === 'loading' && (
+          <div className="hubspot-loading" role="status" aria-live="polite">
+            <div className="hubspot-loading-text">Loading HubSpot appointments and outbound calls...</div>
+            <div className="hubspot-progress" aria-hidden="true">
+              <span />
+            </div>
+          </div>
+        )}
+        <div className="hubspot-date-group">{getDateGroupLabel(report.reportDate || selectedDate)}</div>
+        <div className="table-scroll-controls" aria-label="Table horizontal scroll controls">
+          <button
+            aria-label="Scroll table left"
+            className="table-scroll-button"
+            type="button"
+            onClick={() => scrollTable(-1)}
+          >
+            ‹
+          </button>
+          <div className="top-table-scroll" ref={topScrollRef}>
+            <div ref={topScrollContentRef} />
+          </div>
+          <button
+            aria-label="Scroll table right"
+            className="table-scroll-button"
+            type="button"
+            onClick={() => scrollTable(1)}
+          >
+            ›
+          </button>
+        </div>
+        <div className="readable-table-shell" ref={tableScrollRef}>
+          <table className="readable-report-table appointments-report-table">
+            <thead>
+              <tr>
+                <th scope="col">Meeting Name</th>
+                <th scope="col">Meeting Description</th>
+                <th scope="col" aria-sort="descending">Create Date</th>
+                <th scope="col">Activity Date</th>
+                <th scope="col">Outbound Caller</th>
+                <th scope="col">Called</th>
+                <th scope="col">Confirmation</th>
+              </tr>
+            </thead>
+            <tbody>
+              {status === 'loading' && (
+                <tr>
+                  <td className="table-message" colSpan="7">
+                    Loading HubSpot appointments and outbound calls...
+                  </td>
+                </tr>
+              )}
+              {status !== 'loading' && scheduleRows.length === 0 && (
+                <tr>
+                  <td className="table-message" colSpan="7">
+                    No appointments found for this date.
+                  </td>
+                </tr>
+              )}
+              {status !== 'loading' && scheduleRows.map((slot) => (
+                <tr key={slot.rowId}>
+                  <th className="ellipsis-cell" scope="row" title={getMeetingName(slot)}>
+                    {getMeetingName(slot)}
+                  </th>
+                  <td className="ellipsis-cell muted-report-cell" title={getMeetingDescription(slot)}>
+                    {getMeetingDescription(slot) || '-'}
+                  </td>
+                  <td>{formatDate(slot.date)}</td>
+                  <td>{formatActivityDate(slot)}</td>
+                  <td className="ellipsis-cell" title={slot.callerName || ''}>
+                    {slot.callerName || '-'}
+                  </td>
+                  <td>
+                    <span
+                      className={`readable-status ${slot.called === 'Called' ? 'confirmed' : 'missing'}`}
+                      title={slot.calledDetail || ''}
+                    >
+                      {slot.called || 'Not Called'}
+                    </span>
+                  </td>
+                  <td>
+                    <span
+                      className={`readable-status ${slot.confirmation === 'Confirmed' ? 'confirmed' : 'missing'}`}
+                      title={slot.confirmationDetail || ''}
+                    >
+                      {slot.confirmation || 'Not Confirmed'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+export default HubSpotCallReport

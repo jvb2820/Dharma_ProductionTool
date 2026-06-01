@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: production-tool-hubspot-api
+    runtime: node
+    buildCommand: npm ci
+    startCommand: npm run api
+    healthCheckPath: /health
+    envVars:
+      - key: HUBSPOT_PRIVATE_APP_TOKEN
+        sync: false
+      - key: HUBSPOT_API_ALLOWED_ORIGINS
+        sync: false
+      - key: HUBSPOT_REPORT_TIMEZONE
+        value: America/New_York
+      - key: HUBSPOT_REPORT_DAY
+        value: today
