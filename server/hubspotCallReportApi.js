@@ -12,7 +12,10 @@ const defaultAllowedOrigins = ['http://127.0.0.1:5173', 'http://localhost:5173']
 const reportTimeZone = process.env.HUBSPOT_REPORT_TIMEZONE ?? 'America/New_York'
 const reportCache = new Map()
 const reportCacheTtlMs = 5 * 60 * 1000
-const hubspotMaxAttempts = 4
+const inFlightReports = new Map()
+const hubspotMaxAttempts = 6
+const hubspotRequestSpacingMs = 700
+let lastHubspotRequestAt = 0
 
 const allowedOrigins = readAllowedOrigins()
 
@@ -228,6 +231,8 @@ async function hubspotFetch(path, options = {}) {
   }
 
   for (let attempt = 1; attempt <= hubspotMaxAttempts; attempt += 1) {
+    await waitForHubspotSlot()
+
     const response = await fetch(`${hubspotBaseUrl}${path}`, {
       method: options.method ?? 'GET',
       headers: {
@@ -250,10 +255,21 @@ async function hubspotFetch(path, options = {}) {
     const retryAfterSeconds = Number(response.headers.get('retry-after'))
     const retryDelayMs = Number.isFinite(retryAfterSeconds)
       ? retryAfterSeconds * 1000
-      : attempt * 1250
+      : attempt * 2500
 
     await delay(retryDelayMs)
   }
+}
+
+async function waitForHubspotSlot() {
+  const elapsedMs = Date.now() - lastHubspotRequestAt
+  const waitMs = Math.max(0, hubspotRequestSpacingMs - elapsedMs)
+
+  if (waitMs > 0) {
+    await delay(waitMs)
+  }
+
+  lastHubspotRequestAt = Date.now()
 }
 
 function delay(milliseconds) {
@@ -505,8 +521,15 @@ const server = createServer(async (request, response) => {
       return
     }
 
+    let reportPromise = inFlightReports.get(cacheKey)
+
+    if (!reportPromise) {
+      reportPromise = buildCallReport(selectedDate)
+      inFlightReports.set(cacheKey, reportPromise)
+    }
+
     try {
-      const report = await buildCallReport(selectedDate)
+      const report = await reportPromise
       const payload = {
         source: 'hubspot',
         updatedAt: new Date().toISOString(),
@@ -524,6 +547,8 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 500, {
         message: error.message,
       })
+    } finally {
+      inFlightReports.delete(cacheKey)
     }
     return
   }
