@@ -259,27 +259,95 @@ function HubSpotCallReport() {
   const reportDateLabel = report.reportDate ? formatDate(report.reportDate) : ''
   const reportWeekday = report.reportDate ? formatWeekday(report.reportDate) : 'Loading'
   const timeZoneLabel = getTimeZoneLabel()
-  const callerAnalytics = useMemo(() => {
-    const rows = report.callerAnalytics ?? []
-    const maxCalls = Math.max(...rows.map((row) => row.called), 1)
-
-    return rows.map((row) => ({
-      ...row,
-      calledWidth: `${Math.max((row.called / maxCalls) * 100, 4)}%`,
-      confirmedWidth: `${Math.max((row.confirmed / maxCalls) * 100, row.confirmed > 0 ? 4 : 0)}%`,
-    }))
-  }, [report.callerAnalytics])
   const totalConfirmedAppointments = useMemo(() => {
     return scheduleRows.filter((row) => row.confirmation === 'Confirmed').length
   }, [scheduleRows])
-  const totalCalledAppointments = useMemo(() => {
-    return scheduleRows.filter((row) => row.called === 'Called').length
+  const totalCalledConfirmedAppointments = useMemo(() => {
+    return scheduleRows.filter((row) =>
+      row.confirmation === 'Confirmed' && row.called === 'Called',
+    ).length
   }, [scheduleRows])
-  const calledRate = scheduleRows.length > 0
-    ? Math.round((totalCalledAppointments / scheduleRows.length) * 100)
-    : 0
+  const confirmedCallsByAgent = useMemo(() => {
+    const confirmedRows = scheduleRows.filter((row) => row.confirmation === 'Confirmed')
+    const confirmedStatsByAssignedAgent = confirmedRows.reduce((lookup, row) => {
+      const assignedAgentName = row.scheduledAgent || 'Unassigned'
+      const current = lookup.get(assignedAgentName) ?? {
+        totalAppointments: 0,
+        notCalled: 0,
+      }
+
+      current.totalAppointments += 1
+      if (row.called !== 'Called') {
+        current.notCalled += 1
+      }
+
+      lookup.set(assignedAgentName, current)
+      return lookup
+    }, new Map())
+    const callerRows = confirmedRows.reduce((lookup, row) => {
+      if (row.called !== 'Called' || !row.callerName) {
+        return lookup
+      }
+
+      const assignedAgentName = row.scheduledAgent || 'Unassigned'
+      const current = lookup.get(row.callerName) ?? {
+        callerName: row.callerName,
+        confirmedCalled: 0,
+        assignedAgents: new Map(),
+      }
+      const assignedAgent = current.assignedAgents.get(assignedAgentName) ?? {
+        assignedAgentName,
+        confirmedCalled: 0,
+      }
+
+      current.confirmedCalled += 1
+      assignedAgent.confirmedCalled += 1
+
+      current.assignedAgents.set(assignedAgentName, assignedAgent)
+      lookup.set(row.callerName, current)
+      return lookup
+    }, new Map())
+
+    return [...callerRows.values()]
+      .map((agent) => ({
+        ...agent,
+        assignedAgents: [...agent.assignedAgents.values()]
+          .map((assignedAgent) => {
+            const assignedStats = confirmedStatsByAssignedAgent.get(assignedAgent.assignedAgentName) ?? {
+              totalAppointments: 0,
+              notCalled: 0,
+            }
+
+            return {
+              ...assignedAgent,
+              totalAppointments: assignedStats.totalAppointments,
+              notCalled: assignedStats.notCalled,
+            }
+          })
+          .sort((left, right) =>
+            right.totalAppointments - left.totalAppointments
+            || right.confirmedCalled - left.confirmedCalled
+            || left.assignedAgentName.localeCompare(right.assignedAgentName),
+          ),
+        totalAppointments: [...agent.assignedAgents.keys()].reduce((sum, assignedAgentName) =>
+          sum + (confirmedStatsByAssignedAgent.get(assignedAgentName)?.totalAppointments ?? 0), 0),
+        notCalled: [...agent.assignedAgents.keys()].reduce((sum, assignedAgentName) =>
+          sum + (confirmedStatsByAssignedAgent.get(assignedAgentName)?.notCalled ?? 0), 0),
+        confirmedShare: totalConfirmedAppointments > 0
+          ? Math.round((agent.confirmedCalled / totalConfirmedAppointments) * 100)
+          : 0,
+      }))
+      .sort((left, right) =>
+        right.totalAppointments - left.totalAppointments
+        || right.confirmedCalled - left.confirmedCalled
+        || left.callerName.localeCompare(right.callerName),
+      )
+  }, [scheduleRows, totalConfirmedAppointments])
   const confirmedRate = scheduleRows.length > 0
     ? Math.round((totalConfirmedAppointments / scheduleRows.length) * 100)
+    : 0
+  const confirmedCalledRate = totalConfirmedAppointments > 0
+    ? Math.round((totalCalledConfirmedAppointments / totalConfirmedAppointments) * 100)
     : 0
   const loadingPercent = status === 'loading'
     ? Math.min(96, Math.max(5, Math.round((loadingElapsedMs / averageRuntimeMs) * 100)))
@@ -403,14 +471,6 @@ function HubSpotCallReport() {
                 <span style={{ width: scheduleRows.length > 0 ? '100%' : '0%' }} />
               </div>
             </div>
-            <div className="analytics-total-card called">
-              <span>Called</span>
-              <strong>{totalCalledAppointments}</strong>
-              <small>Appointments with a qualifying outbound caller</small>
-              <div className="metric-rail" aria-hidden="true">
-                <span style={{ width: `${calledRate}%` }} />
-              </div>
-            </div>
             <div className="analytics-total-card confirmed">
               <span>Confirmed</span>
               <strong>{totalConfirmedAppointments}</strong>
@@ -419,31 +479,58 @@ function HubSpotCallReport() {
                 <span style={{ width: `${confirmedRate}%` }} />
               </div>
             </div>
+            <div className="analytics-total-card confirmed-called">
+              <span>Confirmed Called</span>
+              <strong>{totalCalledConfirmedAppointments}</strong>
+              <small>Confirmed appointments called before the appointment</small>
+              <div className="metric-rail" aria-hidden="true">
+                <span style={{ width: `${confirmedCalledRate}%` }} />
+              </div>
+            </div>
           </div>
-          <div className="caller-performance-grid">
-            {callerAnalytics.length === 0 && (
-              <div className="analytics-empty">No qualifying outbound callers found for this date.</div>
+          <div className="agent-confirmed-grid" aria-label="Confirmed calls by agent">
+            {confirmedCallsByAgent.length === 0 && (
+              <div className="agent-confirmed-empty">No confirmed appointments were called before the appointment.</div>
             )}
-            {callerAnalytics.map((caller) => (
-              <article className="caller-performance-card" key={caller.callerName}>
-                <div className="caller-performance-header">
-                  <h3 title={caller.callerName}>{caller.callerName}</h3>
-                  <span>{caller.called} calls</span>
+            {confirmedCallsByAgent.map((agent) => (
+              <article className="agent-confirmed-card" key={agent.callerName}>
+                <div className="agent-confirmed-header">
+                  <h3 title={agent.callerName}>{agent.callerName}</h3>
+                  <strong>
+                    {agent.confirmedCalled}
+                    <span>
+                      {' '}
+                      of
+                      {' '}
+                      {totalConfirmedAppointments}
+                    </span>
+                  </strong>
                 </div>
-                <div className="caller-bar-stack">
-                  <div className="caller-metric-line">
-                    <span>Total Calls</span>
-                    <div className="caller-bar-track" title={`${caller.called} qualifying calls`}>
-                      <div className="caller-bar-fill called" style={{ width: caller.calledWidth }} />
-                    </div>
-                    <strong>{caller.called}</strong>
+                <div className="agent-confirmed-bar" title={`${agent.confirmedCalled} of ${totalConfirmedAppointments} confirmed appointments`}>
+                  <span style={{ width: `${agent.confirmedShare}%` }} />
+                </div>
+                <div className="agent-assignment-table" role="table" aria-label={`${agent.callerName} confirmed calls by activity assigned agent`}>
+                  <div className="agent-assignment-row heading" role="row">
+                    <span role="columnheader">Activity Assigned To</span>
+                    <span role="columnheader">Total Appt.</span>
+                    <span role="columnheader">Confirmed Called</span>
+                    <span role="columnheader">Not Called</span>
                   </div>
-                  <div className="caller-metric-line">
-                    <span>Confirmed</span>
-                    <div className="caller-bar-track" title={`${caller.confirmed} confirmed appointments`}>
-                      <div className="caller-bar-fill confirmed" style={{ width: caller.confirmedWidth }} />
+                  {agent.assignedAgents.map((assignedAgent) => (
+                    <div className="agent-assignment-row" role="row" key={assignedAgent.assignedAgentName}>
+                      <span role="cell" title={assignedAgent.assignedAgentName}>
+                        {assignedAgent.assignedAgentName}
+                      </span>
+                      <strong role="cell">{assignedAgent.totalAppointments}</strong>
+                      <strong role="cell">{assignedAgent.confirmedCalled}</strong>
+                      <strong role="cell">{assignedAgent.notCalled}</strong>
                     </div>
-                    <strong>{caller.confirmed}</strong>
+                  ))}
+                  <div className="agent-assignment-row total" role="row">
+                    <span role="cell">Total</span>
+                    <strong role="cell">{agent.totalAppointments}</strong>
+                    <strong role="cell">{agent.confirmedCalled}</strong>
+                    <strong role="cell">{agent.notCalled}</strong>
                   </div>
                 </div>
               </article>

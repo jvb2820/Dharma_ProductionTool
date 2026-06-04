@@ -413,11 +413,6 @@
   text-transform: uppercase;
 }
 
-.caller-bars {
-  display: grid;
-  gap: 10px;
-}
-
 .analytics-summary-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -467,14 +462,14 @@
   background: var(--gold);
 }
 
-.analytics-total-card.called::before,
-.analytics-total-card.called .metric-rail span {
-  background: #00a4bd;
-}
-
 .analytics-total-card.confirmed::before,
 .analytics-total-card.confirmed .metric-rail span {
   background: #4fb06d;
+}
+
+.analytics-total-card.confirmed-called::before,
+.analytics-total-card.confirmed-called .metric-rail span {
+  background: #7c5cbd;
 }
 
 .analytics-total-card span,
@@ -511,153 +506,138 @@
   animation: rail-grow 760ms ease-out both;
 }
 
-.analytics-empty {
+.agent-confirmed-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.agent-confirmed-empty {
+  grid-column: 1 / -1;
   padding: 14px;
+  border: 1px solid #d5e0ea;
   color: #516f90;
   background: #f6f9fc;
   font-size: 0.84rem;
   font-weight: 800;
 }
 
-.caller-performance-grid {
+.agent-confirmed-card {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.caller-performance-card {
-  position: relative;
-  display: grid;
-  gap: 14px;
-  overflow: hidden;
-  padding: 16px;
+  gap: 10px;
+  padding: 14px;
   border: 1px solid #d5e0ea;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 252, 0.72));
+  border-left: 4px solid #7c5cbd;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 252, 0.78));
   box-shadow: 0 10px 24px rgba(45, 62, 80, 0.05);
   animation: card-pop 420ms ease-out both;
 }
 
-.caller-performance-card::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 4px;
-  background: var(--gold);
-}
-
-.caller-performance-header {
+.agent-confirmed-header {
   display: flex;
   align-items: start;
   justify-content: space-between;
   gap: 12px;
 }
 
-.caller-performance-header h3 {
+.agent-confirmed-header h3 {
   overflow: hidden;
   margin: 0;
   color: #213343;
-  font-size: 0.92rem;
+  font-size: 0.94rem;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.caller-performance-header span {
+.agent-confirmed-header strong {
   flex: 0 0 auto;
-  padding: 4px 8px;
-  color: #8a6500;
-  background: #fff8e3;
-  font-size: 0.74rem;
+  color: #213343;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.agent-confirmed-header strong span {
+  color: #516f90;
+  font-size: 0.76rem;
   font-weight: 900;
   text-transform: uppercase;
 }
 
-.caller-bar-row {
-  display: grid;
-  grid-template-columns: minmax(150px, 220px) minmax(180px, 1fr);
-  align-items: start;
-  gap: 14px;
-  padding: 10px 0;
-  border-top: 1px solid #eaf0f6;
-}
-
-.caller-name {
-  overflow: hidden;
-  color: #213343;
-  font-size: 0.86rem;
-  font-weight: 800;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.caller-bar-track {
-  height: 18px;
+.agent-confirmed-bar {
+  height: 12px;
   overflow: hidden;
   border-radius: 999px;
   background: #eaf0f6;
   box-shadow: inset 0 0 0 1px rgba(33, 51, 67, 0.04);
 }
 
-.caller-bar-stack {
-  display: grid;
-  gap: 8px;
-}
-
-.caller-metric-line {
-  display: grid;
-  grid-template-columns: 96px minmax(120px, 1fr) 42px;
-  align-items: center;
-  gap: 10px;
-}
-
-.caller-metric-line span {
-  color: #516f90;
-  font-size: 0.74rem;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
-.caller-metric-line strong {
-  color: #213343;
-  font-size: 0.9rem;
-  text-align: right;
-}
-
-.caller-bar-fill {
+.agent-confirmed-bar span {
+  display: block;
   height: 100%;
-  min-width: 18px;
-  overflow: hidden;
+  min-width: 0;
   border-radius: inherit;
+  background: linear-gradient(90deg, #7c5cbd, #00a4bd);
   animation: rail-grow 760ms ease-out both;
 }
 
-.caller-bar-fill.called {
-  background:
-    linear-gradient(90deg, #00a4bd, #32c7d8),
-    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.18) 0 8px, transparent 8px 16px);
-}
-
-.caller-bar-fill.confirmed {
-  background:
-    linear-gradient(90deg, var(--gold), #f3c640),
-    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.18) 0 8px, transparent 8px 16px);
-}
-
-.caller-counts {
+.agent-assignment-table {
   display: grid;
-  grid-template-columns: auto auto auto auto;
-  align-items: baseline;
-  justify-content: end;
-  gap: 5px;
-  color: #516f90;
-  font-size: 0.75rem;
-  font-weight: 800;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid #d5e0ea;
+  background: #fff;
 }
 
-.caller-counts strong {
+.agent-assignment-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, minmax(96px, 130px));
+  align-items: center;
+  min-width: 560px;
+  min-height: 34px;
+  border-top: 1px solid #d5e0ea;
+  background: #e8f7df;
+}
+
+.agent-assignment-row:first-child {
+  border-top: 0;
+}
+
+.agent-assignment-row.heading {
+  background: #f2f4f7;
+}
+
+.agent-assignment-row.total {
+  background: #d9f4cc;
+}
+
+.agent-assignment-row span,
+.agent-assignment-row strong {
+  min-width: 0;
+  padding: 7px 10px;
   color: #213343;
-  font-size: 0.9rem;
+  font-size: 0.84rem;
+  line-height: 1.15;
+}
+
+.agent-assignment-row span {
+  overflow: hidden;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-assignment-row strong {
+  border-left: 1px solid #d5e0ea;
+  font-weight: 900;
+  text-align: center;
+}
+
+.agent-assignment-row.heading span,
+.agent-assignment-row.heading strong {
+  color: #33475b;
+  font-size: 0.76rem;
+  text-transform: uppercase;
 }
 
 .hubspot-date-group {
@@ -988,8 +968,8 @@
 @media (prefers-reduced-motion: reduce) {
   .analytics-panel,
   .analytics-total-card,
-  .caller-performance-card,
-  .caller-bar-fill,
+  .agent-confirmed-card,
+  .agent-confirmed-bar span,
   .metric-rail span,
   .hubspot-progress span {
     animation: none;
@@ -1124,25 +1104,22 @@
     flex-wrap: wrap;
   }
 
-  .caller-bar-row {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-
-  .caller-performance-grid {
-    grid-template-columns: 1fr;
-  }
-
   .analytics-summary-grid {
     grid-template-columns: 1fr;
   }
 
-  .caller-metric-line {
-    grid-template-columns: 84px minmax(120px, 1fr) 38px;
+  .agent-confirmed-grid {
+    grid-template-columns: 1fr;
   }
 
-  .caller-counts {
-    justify-content: start;
+  .agent-confirmed-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .agent-assignment-row {
+    grid-template-columns: minmax(150px, 1fr) repeat(3, 92px);
   }
 
   .report-panel {
