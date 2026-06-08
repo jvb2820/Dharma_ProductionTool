@@ -1,11 +1,13 @@
 import './App.css'
 import HomeDashboard from './routes/HomeDashboard'
 import HubSpotCallReport from './routes/HubSpotCallReport'
+import Tracking from './routes/Tracking'
 
 const routes = {
   '/': HomeDashboard,
   '/home': HomeDashboard,
   '/call-report': HubSpotCallReport,
+  '/tracking': Tracking,
 }
 
 function App() {
@@ -14,6 +16,7 @@ function App() {
   const tabs = [
     { href: '/home', label: 'Home' },
     { href: '/call-report', label: 'Call Report' },
+    { href: '/tracking', label: 'Tracking' },
   ]
 
   return (

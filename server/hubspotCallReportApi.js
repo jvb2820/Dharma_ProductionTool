@@ -7,15 +7,23 @@ loadLocalEnv()
 const port = Number(process.env.PORT ?? 3001)
 const host = process.env.HOST ?? '0.0.0.0'
 const hubspotBaseUrl = 'https://api.hubapi.com'
+const shopifyApiVersion = process.env.SHOPIFY_API_VERSION ?? '2026-01'
+const defaultShopifyStatusSheetCsvUrl = 'https://docs.google.com/spreadsheets/d/1uBJLgzyYtBnPxR9x-DuHRcJz1DTJm3YSK7halebtWLg/gviz/tq?tqx=out:csv&gid=608356906'
+const supabaseTrackingTable = process.env.SUPABASE_TRACKING_TABLE ?? 'tracking_dashboard'
 const connectedDispositionId = 'f240bbac-87c9-4f6e-bf70-924b57d47db7'
 const defaultAllowedOrigins = ['http://127.0.0.1:5173', 'http://localhost:5173']
 const reportTimeZone = process.env.HUBSPOT_REPORT_TIMEZONE ?? 'America/New_York'
 const reportCache = new Map()
+const trackingCache = new Map()
+const uspsTrackingCache = new Map()
+let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
 const inFlightReports = new Map()
+const inFlightTrackingReports = new Map()
 const hubspotMaxAttempts = 6
 const hubspotRequestSpacingMs = 700
+const uspsTrackingCacheTtlMs = 30 * 60 * 1000
 let lastHubspotRequestAt = 0
 
 const allowedOrigins = readAllowedOrigins()
@@ -197,6 +205,115 @@ function normalizeText(value) {
   return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 }
 
+function normalizeMatchText(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function normalizeOrderNumber(value) {
+  const cleaned = String(value ?? '').replace(/\s+/g, '').trim()
+
+  return cleaned.startsWith('#') ? cleaned : `#${cleaned.replace(/^#/, '')}`
+}
+
+function normalizeTrackingNumber(value) {
+  return String(value ?? '').replace(/\D/g, '')
+}
+
+function parseDisplayDate(value) {
+  if (!value) return null
+
+  const parts = String(value).trim().split('/').map(Number)
+  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return null
+
+  const [month, day, year] = parts
+  const date = new Date(Date.UTC(year, month - 1, day, 12))
+
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function displayDateToIso(value) {
+  const date = parseDisplayDate(value)
+
+  return date ? date.toISOString().slice(0, 10) : null
+}
+
+function isoDateToDisplay(value) {
+  if (!value) return ''
+
+  const date = new Date(`${value}T12:00:00Z`)
+  if (Number.isNaN(date.getTime())) return ''
+
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  }).format(date)
+}
+
+function countTrackingBusinessDays(startDate, endDate = new Date()) {
+  if (!startDate) return 0
+
+  const current = new Date(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate())
+  const end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate())
+  let businessDays = 0
+
+  current.setDate(current.getDate() + 1)
+
+  while (current <= end) {
+    const day = current.getDay()
+
+    if (day !== 0 && day !== 6) {
+      businessDays += 1
+    }
+    current.setDate(current.getDate() + 1)
+  }
+
+  return businessDays
+}
+
+function isDeliveredStatus(value) {
+  return String(value ?? '').toLowerCase().includes('delivered')
+    && !String(value ?? '').toLowerCase().includes('failed')
+}
+
+function readOrderSort(value) {
+  const match = String(value ?? '').match(/\d+/)
+
+  return match ? Number(match[0]) : null
+}
+
+function escapeXml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+function decodeXml(value) {
+  return String(value ?? '')
+    .replace(/<!\[CDATA\[(.*?)\]\]>/gs, '$1')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&')
+    .trim()
+}
+
+function readXmlTag(xml, tagName) {
+  const match = String(xml ?? '').match(new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i'))
+
+  return decodeXml(match?.[1] ?? '')
+}
+
 function isCancelledMeeting(value) {
   return /\bcancell?ed\b|\bcancelad[ao]\b|\bcancel/i.test(String(value ?? ''))
 }
@@ -281,6 +398,796 @@ function delay(milliseconds) {
   return new Promise((resolveDelay) => {
     setTimeout(resolveDelay, milliseconds)
   })
+}
+
+function normalizeShopifyStoreDomain(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/.*$/, '')
+}
+
+function encodeShopifyParams(params) {
+  return Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join('&')
+}
+
+function readShopifyNextPageInfo(linkHeader) {
+  return String(linkHeader ?? '')
+    .split(',')
+    .map((link) => link.trim())
+    .find((link) => link.includes('rel="next"'))
+    ?.match(/[?&]page_info=([^&>]+)/)?.[1]
+}
+
+function getSupabaseRestUrl() {
+  const restUrl = String(process.env.SUPABASE_REST_URL ?? '').trim()
+
+  return restUrl ? restUrl.replace(/\/+$/, '') : ''
+}
+
+function hasSupabaseConfig() {
+  return Boolean(getSupabaseRestUrl() && process.env.SUPABASE_ANON_KEY)
+}
+
+async function supabaseRequest(path, options = {}) {
+  const restUrl = getSupabaseRestUrl()
+  const anonKey = process.env.SUPABASE_ANON_KEY
+
+  if (!restUrl || !anonKey) {
+    throw new Error('Missing SUPABASE_REST_URL or SUPABASE_ANON_KEY')
+  }
+
+  const response = await fetch(`${restUrl}${path}`, {
+    method: options.method ?? 'GET',
+    headers: {
+      apikey: anonKey,
+      Authorization: `Bearer ${anonKey}`,
+      'Content-Type': 'application/json',
+      ...(options.headers ?? {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  })
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`Supabase request failed (${response.status}): ${body}`)
+  }
+
+  if (response.status === 204) return null
+
+  const text = await response.text()
+
+  return text ? JSON.parse(text) : null
+}
+
+function buildTrackingDatabaseRow(row, sourceUpdatedAt) {
+  const orderDate = displayDateToIso(row.date)
+  const shippedDate = displayDateToIso(row.dateShipped)
+  const deliveryDate = displayDateToIso(row.deliveryDate)
+  const ageStartDate = parseDisplayDate(row.dateShipped || row.date)
+  const delivered = isDeliveredStatus(row.status)
+  const businessDaysOpen = delivered ? 0 : countTrackingBusinessDays(ageStartDate)
+
+  return {
+    row_id: String(row.rowId ?? `${row.orderNumber}|${row.item}|${row.tracking}`),
+    order_number: row.orderNumber ?? '',
+    order_sort: readOrderSort(row.orderNumber),
+    supliful_order: row.suplifulOrder || null,
+    item: row.item || null,
+    customer_name: row.name || null,
+    phone: row.phone || null,
+    order_date: orderDate,
+    date_shipped: shippedDate,
+    tracking_number: row.tracking || null,
+    usps_url: row.uspsUrl || null,
+    delivery_date: deliveryDate,
+    status: row.status || null,
+    status_source: row.statusSource || null,
+    business_days_open: businessDaysOpen,
+    is_overdue: !delivered && businessDaysOpen > 7,
+    observation: row.observation || null,
+    raw_data: row,
+    source_updated_at: sourceUpdatedAt,
+    synced_at: new Date().toISOString(),
+  }
+}
+
+function normalizeTrackingDatabaseRow(row) {
+  return {
+    rowId: row.row_id,
+    orderNumber: row.order_number ?? '',
+    suplifulOrder: row.supliful_order ?? '',
+    item: row.item ?? '',
+    name: row.customer_name ?? '',
+    phone: row.phone ?? '',
+    date: isoDateToDisplay(row.order_date),
+    dateShipped: isoDateToDisplay(row.date_shipped),
+    tracking: row.tracking_number ?? '',
+    uspsUrl: row.usps_url ?? '',
+    deliveryDate: isoDateToDisplay(row.delivery_date),
+    status: row.status ?? '',
+    statusSource: row.status_source ?? '',
+    observation: row.observation ?? '',
+    businessDaysOpen: row.business_days_open ?? 0,
+    isOverdue: Boolean(row.is_overdue),
+    sourceUpdatedAt: row.source_updated_at ?? null,
+    syncedAt: row.synced_at ?? null,
+  }
+}
+
+async function upsertTrackingRowsToSupabase(rows, sourceUpdatedAt) {
+  if (!hasSupabaseConfig() || rows.length === 0) return false
+
+  const databaseRows = rows.map((row) => buildTrackingDatabaseRow(row, sourceUpdatedAt))
+
+  for (let index = 0; index < databaseRows.length; index += 500) {
+    const batch = databaseRows.slice(index, index + 500)
+
+    await supabaseRequest(`/${supabaseTrackingTable}?on_conflict=row_id`, {
+      method: 'POST',
+      headers: {
+        Prefer: 'resolution=merge-duplicates,return=minimal',
+      },
+      body: batch,
+    })
+  }
+
+  return true
+}
+
+async function loadTrackingRowsFromSupabase() {
+  if (!hasSupabaseConfig()) return []
+
+  const params = new URLSearchParams({
+    select: '*',
+    order: 'order_sort.asc,row_id.asc',
+  })
+  const rows = await supabaseRequest(`/${supabaseTrackingTable}?${params.toString()}`)
+
+  return Array.isArray(rows) ? rows.map(normalizeTrackingDatabaseRow) : []
+}
+
+function parseCsv(text) {
+  const rows = []
+  let row = []
+  let value = ''
+  let insideQuotes = false
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    const nextChar = text[index + 1]
+
+    if (insideQuotes && char === '"' && nextChar === '"') {
+      value += '"'
+      index += 1
+      continue
+    }
+
+    if (char === '"') {
+      insideQuotes = !insideQuotes
+      continue
+    }
+
+    if (!insideQuotes && char === ',') {
+      row.push(value)
+      value = ''
+      continue
+    }
+
+    if (!insideQuotes && (char === '\n' || char === '\r')) {
+      if (char === '\r' && nextChar === '\n') {
+        index += 1
+      }
+      row.push(value)
+      rows.push(row)
+      row = []
+      value = ''
+      continue
+    }
+
+    value += char
+  }
+
+  row.push(value)
+  rows.push(row)
+
+  const headers = rows.shift()?.map((header) => header.trim()) ?? []
+
+  return rows
+    .filter((csvRow) => csvRow.some((cell) => String(cell ?? '').trim()))
+    .map((csvRow) => headers.reduce((record, header, index) => {
+      record[header] = String(csvRow[index] ?? '').replace(/[\r\n]+/g, ' ').trim()
+      return record
+    }, {}))
+}
+
+function readSheetCell(row, header) {
+  return row[header] ?? row[header.toLowerCase()] ?? ''
+}
+
+function buildSheetStatusLookup(rows) {
+  return rows.reduce((lookup, row) => {
+    const status = readSheetCell(row, 'Status').trim()
+    if (!status) return lookup
+
+    const orderNumber = normalizeOrderNumber(readSheetCell(row, 'Order Number'))
+    const item = normalizeMatchText(readSheetCell(row, 'Item'))
+    const tracking = normalizeTrackingNumber(readSheetCell(row, 'Tracking'))
+    const deliveryDate = readSheetCell(row, 'Delivery Date')
+    const observation = readSheetCell(row, 'Observation')
+    const sheetStatus = {
+      status,
+      deliveryDate,
+      observation,
+    }
+
+    if (tracking) {
+      lookup.byTracking.set(tracking, sheetStatus)
+    }
+    if (orderNumber && item) {
+      lookup.byOrderItem.set(`${orderNumber}|${item}`, sheetStatus)
+    }
+    if (orderNumber && status && !lookup.byOrder.has(orderNumber)) {
+      lookup.byOrder.set(orderNumber, sheetStatus)
+    }
+
+    return lookup
+  }, {
+    byTracking: new Map(),
+    byOrderItem: new Map(),
+    byOrder: new Map(),
+  })
+}
+
+async function loadSheetStatusLookup(forceRefresh = false) {
+  const sheetCsvUrl = process.env.SHOPIFY_TRACKING_STATUS_SHEET_CSV_URL ?? defaultShopifyStatusSheetCsvUrl
+
+  if (!sheetCsvUrl) {
+    return buildSheetStatusLookup([])
+  }
+
+  if (!forceRefresh && sheetStatusCache && Date.now() - sheetStatusCache.cachedAt < currentDateCacheTtlMs) {
+    return sheetStatusCache.lookup
+  }
+
+  const response = await fetch(sheetCsvUrl)
+  if (!response.ok) {
+    throw new Error(`Google Sheet status request failed (${response.status})`)
+  }
+
+  const rows = parseCsv(await response.text())
+  const lookup = buildSheetStatusLookup(rows)
+
+  sheetStatusCache = {
+    cachedAt: Date.now(),
+    lookup,
+    rowCount: rows.length,
+  }
+
+  return lookup
+}
+
+async function shopifyFetch(path, params = {}) {
+  const token = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN
+  const storeDomain = normalizeShopifyStoreDomain(process.env.SHOPIFY_STORE_DOMAIN)
+
+  if (!token) {
+    throw new Error('Missing SHOPIFY_ADMIN_ACCESS_TOKEN')
+  }
+  if (!storeDomain) {
+    throw new Error('Missing SHOPIFY_STORE_DOMAIN')
+  }
+
+  const queryString = encodeShopifyParams(params)
+  const url = `https://${storeDomain}/admin/api/${shopifyApiVersion}${path}${queryString ? `?${queryString}` : ''}`
+  const response = await fetch(url, {
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': token,
+    },
+  })
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`Shopify request failed (${response.status}): ${body}`)
+  }
+
+  return {
+    payload: await response.json(),
+    nextPageInfo: readShopifyNextPageInfo(response.headers.get('link')),
+  }
+}
+
+function getUspsTrackingUrl(trackingNumber) {
+  const normalizedTrackingNumber = normalizeTrackingNumber(trackingNumber)
+
+  return normalizedTrackingNumber
+    ? `https://tools.usps.com/go/TrackConfirmAction?tLabels=${encodeURIComponent(normalizedTrackingNumber)}`
+    : ''
+}
+
+function normalizeUspsDashboardStatus(summary, event) {
+  const text = normalizeMatchText(`${event} ${summary}`)
+
+  if (text.includes('delivered')) return 'Delivered'
+  if (
+    text.includes('failed')
+    || text.includes('delivery attempt')
+    || text.includes('notice left')
+    || text.includes('undeliverable')
+    || text.includes('return to sender')
+    || text.includes('insufficient address')
+  ) {
+    return 'Failed delivery'
+  }
+  if (
+    text.includes('in transit')
+    || text.includes('arrived')
+    || text.includes('departed')
+    || text.includes('out for delivery')
+    || text.includes('accepted')
+    || text.includes('processed')
+    || text.includes('moving')
+  ) {
+    return 'In transit'
+  }
+  if (
+    text.includes('label created')
+    || text.includes('pre shipment')
+    || text.includes('shipping partner')
+    || text.includes('awaiting item')
+  ) {
+    return 'In progress'
+  }
+
+  return event || summary ? 'In progress' : ''
+}
+
+function parseUspsDate(value) {
+  const dateText = String(value ?? '').trim()
+  if (!dateText) return ''
+
+  const date = new Date(dateText)
+  if (Number.isNaN(date.getTime())) return dateText
+
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: reportTimeZone,
+    month: 'numeric',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(date)
+}
+
+function parseUspsTrackResponse(xml) {
+  const lookup = new Map()
+  const trackInfoPattern = /<TrackInfo\b([^>]*)>([\s\S]*?)<\/TrackInfo>/gi
+  let match
+
+  while ((match = trackInfoPattern.exec(xml))) {
+    const id = normalizeTrackingNumber(match[1].match(/\bID="([^"]+)"/i)?.[1] ?? '')
+    const body = match[2]
+    const errorDescription = readXmlTag(body, 'Description')
+    const event = readXmlTag(body, 'Event')
+    const eventDate = readXmlTag(body, 'EventDate')
+    const eventTime = readXmlTag(body, 'EventTime')
+    const eventCity = readXmlTag(body, 'EventCity')
+    const eventState = readXmlTag(body, 'EventState')
+    const summary = readXmlTag(body, 'TrackSummary') || [event, eventCity, eventState].filter(Boolean).join(', ')
+    const status = errorDescription
+      ? ''
+      : normalizeUspsDashboardStatus(summary, event)
+
+    if (!id) continue
+
+    lookup.set(id, {
+      status,
+      deliveryDate: status === 'Delivered' ? parseUspsDate(eventDate) : '',
+      observation: summary,
+      uspsEvent: event,
+      uspsEventDate: eventDate,
+      uspsEventTime: eventTime,
+      uspsError: errorDescription,
+    })
+  }
+
+  return lookup
+}
+
+async function loadUspsTrackingStatuses(trackingNumbers) {
+  const userId = process.env.USPS_WEBTOOLS_USER_ID
+  const enabled = process.env.USPS_TRACKING_ENABLED !== '0'
+  const normalizedTrackingNumbers = [...new Set(trackingNumbers.map(normalizeTrackingNumber).filter(Boolean))]
+
+  if (!enabled || !userId || normalizedTrackingNumbers.length === 0) {
+    return new Map()
+  }
+
+  const lookup = new Map()
+  const numbersToFetch = []
+
+  normalizedTrackingNumbers.forEach((trackingNumber) => {
+    const cachedStatus = uspsTrackingCache.get(trackingNumber)
+
+    if (cachedStatus && Date.now() - cachedStatus.cachedAt < uspsTrackingCacheTtlMs) {
+      lookup.set(trackingNumber, cachedStatus.payload)
+      return
+    }
+
+    numbersToFetch.push(trackingNumber)
+  })
+
+  for (let index = 0; index < numbersToFetch.length; index += 35) {
+    const batch = numbersToFetch.slice(index, index + 35)
+    const trackIds = batch
+      .map((trackingNumber) => `<TrackID ID="${escapeXml(trackingNumber)}"></TrackID>`)
+      .join('')
+    const xml = `<TrackRequest USERID="${escapeXml(userId)}">${trackIds}</TrackRequest>`
+    const requestUrl = `https://secure.shippingapis.com/ShippingAPI.dll?API=TrackV2&XML=${encodeURIComponent(xml)}`
+    const response = await fetch(requestUrl)
+
+    if (!response.ok) {
+      throw new Error(`USPS tracking request failed (${response.status})`)
+    }
+
+    const batchLookup = parseUspsTrackResponse(await response.text())
+
+    batchLookup.forEach((payload, trackingNumber) => {
+      uspsTrackingCache.set(trackingNumber, {
+        cachedAt: Date.now(),
+        payload,
+      })
+      lookup.set(trackingNumber, payload)
+    })
+  }
+
+  return lookup
+}
+
+function formatShopifyDate(value) {
+  if (!value) return ''
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: reportTimeZone,
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  }).format(date)
+}
+
+function readOrderName(order) {
+  const shippingAddress = order.shipping_address ?? {}
+  const billingAddress = order.billing_address ?? {}
+  const customer = order.customer ?? {}
+  const firstName = shippingAddress.first_name ?? billingAddress.first_name ?? customer.first_name ?? ''
+  const lastName = shippingAddress.last_name ?? billingAddress.last_name ?? customer.last_name ?? ''
+
+  return [firstName, lastName].filter(Boolean).join(' ') || order.email || ''
+}
+
+function readOrderPhone(order) {
+  return order.shipping_address?.phone
+    ?? order.billing_address?.phone
+    ?? order.phone
+    ?? order.customer?.phone
+    ?? ''
+}
+
+function readOrderItems(order) {
+  return (order.line_items ?? [])
+    .map((item) => item.name || item.title)
+    .filter(Boolean)
+    .join(', ')
+}
+
+function readLineItemProperty(lineItem, propertyNames) {
+  const properties = lineItem.properties ?? []
+  const matchingProperty = properties.find((property) =>
+    propertyNames.some((propertyName) =>
+      String(property.name ?? '').toLowerCase().includes(propertyName),
+    ),
+  )
+
+  return matchingProperty?.value ?? ''
+}
+
+function readTrackingNumbers(order) {
+  const trackingNumbers = (order.fulfillments ?? []).flatMap((fulfillment) => {
+    if (Array.isArray(fulfillment.tracking_numbers) && fulfillment.tracking_numbers.length > 0) {
+      return fulfillment.tracking_numbers
+    }
+
+    return fulfillment.tracking_number ? [fulfillment.tracking_number] : []
+  })
+
+  return [...new Set(trackingNumbers.filter(Boolean))].join(', ')
+}
+
+function readLineItemFulfillments(order, lineItem) {
+  const matchingFulfillments = (order.fulfillments ?? []).filter((fulfillment) =>
+    (fulfillment.line_items ?? []).some((fulfillmentLineItem) =>
+      String(fulfillmentLineItem.id) === String(lineItem.id)
+      || String(fulfillmentLineItem.variant_id) === String(lineItem.variant_id),
+    ),
+  )
+
+  return matchingFulfillments.length > 0 ? matchingFulfillments : order.fulfillments ?? []
+}
+
+function readTrackingNumbersFromFulfillments(fulfillments) {
+  const trackingNumbers = fulfillments.flatMap((fulfillment) => {
+    if (Array.isArray(fulfillment.tracking_numbers) && fulfillment.tracking_numbers.length > 0) {
+      return fulfillment.tracking_numbers
+    }
+
+    return fulfillment.tracking_number ? [fulfillment.tracking_number] : []
+  })
+
+  return [...new Set(trackingNumbers.filter(Boolean))].join(', ')
+}
+
+function readShippedDateFromFulfillments(fulfillments) {
+  const fulfillmentDates = fulfillments
+    .map((fulfillment) => fulfillment.created_at ?? fulfillment.updated_at)
+    .filter(Boolean)
+    .sort((left, right) => new Date(right) - new Date(left))
+
+  return formatShopifyDate(fulfillmentDates[0])
+}
+
+function mapShopifyShipmentStatus(value) {
+  const shipmentStatus = String(value ?? '').toLowerCase()
+
+  if (shipmentStatus === 'delivered') return 'Delivered'
+  if (
+    shipmentStatus === 'failure'
+    || shipmentStatus === 'attempted_delivery'
+  ) {
+    return 'Failed delivery'
+  }
+  if (
+    shipmentStatus === 'in_transit'
+    || shipmentStatus === 'out_for_delivery'
+  ) {
+    return 'In transit'
+  }
+  if (
+    shipmentStatus === 'confirmed'
+    || shipmentStatus === 'label_printed'
+    || shipmentStatus === 'label_purchased'
+    || shipmentStatus === 'ready_for_pickup'
+  ) {
+    return 'In progress'
+  }
+
+  return ''
+}
+
+function readShopifyShipmentStatusFromFulfillments(fulfillments) {
+  const statuses = fulfillments
+    .map((fulfillment) => mapShopifyShipmentStatus(fulfillment.shipment_status))
+    .filter(Boolean)
+
+  if (statuses.includes('Failed delivery')) return 'Failed delivery'
+  if (statuses.includes('Delivered')) return 'Delivered'
+  if (statuses.includes('In transit')) return 'In transit'
+  if (statuses.includes('In progress')) return 'In progress'
+
+  return ''
+}
+
+function readDeliveredDateFromFulfillments(fulfillments) {
+  const deliveredDate = fulfillments
+    .filter((fulfillment) => mapShopifyShipmentStatus(fulfillment.shipment_status) === 'Delivered')
+    .map((fulfillment) => fulfillment.delivered_at ?? fulfillment.updated_at)
+    .filter(Boolean)
+    .sort((left, right) => new Date(right) - new Date(left))[0]
+
+  return formatShopifyDate(deliveredDate)
+}
+
+function readShopifyStatusObservation(fulfillments) {
+  const shipmentStatuses = [...new Set(fulfillments
+    .map((fulfillment) => fulfillment.shipment_status)
+    .filter(Boolean))]
+
+  return shipmentStatuses.length > 0
+    ? `Shopify shipment status: ${shipmentStatuses.join(', ')}`
+    : ''
+}
+
+function normalizeShopifyOrder(order) {
+  const tracking = readTrackingNumbers(order)
+  const fulfillments = order.fulfillments ?? []
+  const shopifyStatus = readShopifyShipmentStatusFromFulfillments(fulfillments)
+
+  return {
+    rowId: String(order.id),
+    orderNumber: order.name ?? String(order.order_number ?? order.id),
+    item: readOrderItems(order),
+    name: readOrderName(order),
+    phone: readOrderPhone(order),
+    date: formatShopifyDate(order.created_at),
+    dateShipped: readShippedDateFromFulfillments(fulfillments),
+    tracking,
+    uspsUrl: getUspsTrackingUrl(tracking),
+    deliveryDate: shopifyStatus === 'Delivered' ? readDeliveredDateFromFulfillments(fulfillments) : '',
+    status: shopifyStatus,
+    statusSource: shopifyStatus ? 'shopify' : '',
+    observation: shopifyStatus ? readShopifyStatusObservation(fulfillments) : '',
+  }
+}
+
+function normalizeShopifyOrderLine(order, lineItem, lineItemIndex) {
+  const fulfillments = readLineItemFulfillments(order, lineItem)
+  const tracking = readTrackingNumbersFromFulfillments(fulfillments)
+  const shopifyStatus = readShopifyShipmentStatusFromFulfillments(fulfillments)
+
+  return {
+    rowId: `${order.id}:${lineItem.id ?? lineItemIndex}`,
+    orderNumber: order.name ?? String(order.order_number ?? order.id),
+    suplifulOrder: readLineItemProperty(lineItem, ['supliful', 'fulfillment order', 'order id']),
+    item: lineItem.name || lineItem.title || '',
+    name: readOrderName(order),
+    phone: readOrderPhone(order),
+    date: formatShopifyDate(order.created_at),
+    dateShipped: readShippedDateFromFulfillments(fulfillments),
+    tracking,
+    uspsUrl: getUspsTrackingUrl(tracking),
+    deliveryDate: shopifyStatus === 'Delivered' ? readDeliveredDateFromFulfillments(fulfillments) : '',
+    status: shopifyStatus,
+    statusSource: shopifyStatus ? 'shopify' : '',
+    observation: shopifyStatus ? readShopifyStatusObservation(fulfillments) : '',
+  }
+}
+
+function applySheetStatus(row, sheetStatusLookup) {
+  const trackingNumbers = String(row.tracking ?? '')
+    .split(',')
+    .map((tracking) => normalizeTrackingNumber(tracking))
+    .filter(Boolean)
+  const orderNumber = normalizeOrderNumber(row.orderNumber)
+  const item = normalizeMatchText(row.item)
+  const sheetStatus = trackingNumbers
+    .map((tracking) => sheetStatusLookup.byTracking.get(tracking))
+    .find(Boolean)
+    ?? sheetStatusLookup.byOrderItem.get(`${orderNumber}|${item}`)
+    ?? sheetStatusLookup.byOrder.get(orderNumber)
+
+  if (!sheetStatus) return row
+
+  return {
+    ...row,
+    deliveryDate: sheetStatus.deliveryDate || row.deliveryDate,
+    status: sheetStatus.status,
+    statusSource: 'sheet',
+    observation: sheetStatus.observation || row.observation,
+  }
+}
+
+function applyUspsStatus(row, uspsTrackingLookup) {
+  if (row.statusSource === 'sheet') return row
+
+  const trackingNumbers = String(row.tracking ?? '')
+    .split(',')
+    .map((tracking) => normalizeTrackingNumber(tracking))
+    .filter(Boolean)
+  const uspsStatus = trackingNumbers
+    .map((tracking) => uspsTrackingLookup.get(tracking))
+    .find((trackingStatus) => trackingStatus?.status)
+
+  if (!uspsStatus) return row
+
+  return {
+    ...row,
+    deliveryDate: uspsStatus.deliveryDate || row.deliveryDate,
+    status: uspsStatus.status,
+    statusSource: 'usps',
+    observation: uspsStatus.observation || row.observation,
+  }
+}
+
+async function loadShopifyOrders(firstPageParams) {
+  const orders = []
+  let pageInfo = ''
+  let pageCount = 0
+  const maxPages = Number(process.env.SHOPIFY_TRACKING_MAX_PAGES ?? 40)
+
+  do {
+    const params = pageInfo
+      ? { limit: firstPageParams.limit, page_info: pageInfo }
+      : firstPageParams
+    const { payload, nextPageInfo } = await shopifyFetch('/orders.json', params)
+
+    orders.push(...(payload.orders ?? []))
+    pageInfo = nextPageInfo ?? ''
+    pageCount += 1
+  } while (pageInfo && pageCount < maxPages)
+
+  return {
+    orders,
+    pageCount,
+    hitPageLimit: Boolean(pageInfo),
+  }
+}
+
+async function buildShopifyTrackingReport(limit = 250) {
+  const pageLimit = Math.min(Math.max(Number(limit) || 250, 1), 250)
+  const createdAtMin = process.env.SHOPIFY_TRACKING_CREATED_AT_MIN
+  const fields = [
+    'id',
+    'name',
+    'order_number',
+    'created_at',
+    'email',
+    'phone',
+    'customer',
+    'shipping_address',
+    'billing_address',
+    'line_items',
+    'fulfillments',
+  ].join(',')
+  const { orders, pageCount, hitPageLimit } = await loadShopifyOrders({
+    status: 'any',
+    limit: pageLimit,
+    order: 'created_at asc',
+    created_at_min: createdAtMin,
+    fields,
+  })
+  const rows = orders.flatMap((order) => {
+    const lineItems = order.line_items ?? []
+
+    return lineItems.length > 0
+      ? lineItems.map((lineItem, index) => normalizeShopifyOrderLine(order, lineItem, index))
+      : [normalizeShopifyOrder(order)]
+  })
+  const sheetStatusLookup = await loadSheetStatusLookup()
+  const rowsWithSheetStatus = rows.map((row) => applySheetStatus(row, sheetStatusLookup))
+  const uspsTrackingNumbers = rowsWithSheetStatus
+    .filter((row) => !row.status)
+    .flatMap((row) => String(row.tracking ?? '').split(','))
+  const uspsTrackingLookup = await loadUspsTrackingStatuses(uspsTrackingNumbers)
+  const rowsWithStatuses = rowsWithSheetStatus.map((row) => applyUspsStatus(row, uspsTrackingLookup))
+  const rowsWithStatusCount = rowsWithStatuses.filter((row) => row.status).length
+  const rowsWithUspsStatusCount = rowsWithStatuses.filter((row) => row.statusSource === 'usps').length
+  const rowsWithShopifyStatusCount = rowsWithStatuses.filter((row) => row.statusSource === 'shopify').length
+  const rowsWithDeliveryDateCount = rowsWithStatuses.filter((row) => row.deliveryDate).length
+  let databaseRows = []
+  let databaseSynced = false
+  let databaseError = ''
+  const updatedAt = new Date().toISOString()
+
+  try {
+    databaseSynced = await upsertTrackingRowsToSupabase(rowsWithStatuses, updatedAt)
+    databaseRows = databaseSynced ? await loadTrackingRowsFromSupabase() : []
+  } catch (error) {
+    databaseError = error.message
+  }
+  const responseRows = databaseRows.length > 0 ? databaseRows : rowsWithStatuses
+
+  return {
+    source: databaseRows.length > 0 ? 'supabase' : 'shopify',
+    updatedAt,
+    orderCount: orders.length,
+    pageCount,
+    hitPageLimit,
+    createdAtMin: createdAtMin ?? null,
+    sheetStatusRows: sheetStatusCache?.rowCount ?? null,
+    rowsWithStatusCount,
+    rowsWithUspsStatusCount,
+    rowsWithShopifyStatusCount,
+    rowsWithDeliveryDateCount,
+    uspsTrackingEnabled: Boolean(process.env.USPS_WEBTOOLS_USER_ID) && process.env.USPS_TRACKING_ENABLED !== '0',
+    databaseSynced,
+    databaseRows: databaseRows.length,
+    databaseError,
+    rows: responseRows,
+  }
 }
 
 async function hubspotSearch(objectType, body) {
@@ -556,6 +1463,46 @@ const server = createServer(async (request, response) => {
       })
     } finally {
       inFlightReports.delete(cacheKey)
+    }
+    return
+  }
+
+  if (requestUrl.pathname === '/api/shopify/tracking' && request.method === 'GET') {
+    const forceRefresh = requestUrl.searchParams.get('refresh') === '1'
+    const limit = requestUrl.searchParams.get('limit') ?? '250'
+    const cacheKey = `${limit}:${process.env.SHOPIFY_TRACKING_CREATED_AT_MIN ?? 'all'}`
+    const cachedReport = trackingCache.get(cacheKey)
+
+    if (forceRefresh) {
+      sheetStatusCache = null
+    }
+
+    if (!forceRefresh && cachedReport && Date.now() - cachedReport.cachedAt < currentDateCacheTtlMs) {
+      sendJson(request, response, 200, cachedReport.payload)
+      return
+    }
+
+    let trackingPromise = inFlightTrackingReports.get(cacheKey)
+
+    if (!trackingPromise) {
+      trackingPromise = buildShopifyTrackingReport(limit)
+      inFlightTrackingReports.set(cacheKey, trackingPromise)
+    }
+
+    try {
+      const payload = await trackingPromise
+
+      trackingCache.set(cacheKey, {
+        cachedAt: Date.now(),
+        payload,
+      })
+      sendJson(request, response, 200, payload)
+    } catch (error) {
+      sendJson(request, response, 500, {
+        message: error.message,
+      })
+    } finally {
+      inFlightTrackingReports.delete(cacheKey)
     }
     return
   }
