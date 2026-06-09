@@ -34,7 +34,12 @@ HUBSPOT_PRIVATE_APP_TOKEN=pat-na1-your-real-token
 HUBSPOT_API_ALLOWED_ORIGINS=https://your-vercel-app.vercel.app
 HUBSPOT_REPORT_TIMEZONE=America/New_York
 HUBSPOT_REPORT_DAY=today
+SHOPIFY_STORE_DOMAIN=your-store.myshopify.com
+SHOPIFY_CLIENT_ID=your-client-id
+SHOPIFY_CLIENT_SECRET=your-client-secret
 ```
+
+The Shopify API uses the client credentials to request expiring Admin API access tokens and refreshes them automatically before expiry. `SHOPIFY_ADMIN_ACCESS_TOKEN` can be set as a fallback for legacy/admin-created apps.
 
 After Render deploys, the API endpoint will be:
 

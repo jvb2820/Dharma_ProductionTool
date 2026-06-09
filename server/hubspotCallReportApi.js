@@ -24,7 +24,10 @@ const inFlightTrackingReports = new Map()
 const hubspotMaxAttempts = 6
 const hubspotRequestSpacingMs = 700
 const uspsTrackingCacheTtlMs = 30 * 60 * 1000
+const shopifyAccessTokenRefreshBufferMs = 5 * 60 * 1000
 let lastHubspotRequestAt = 0
+let shopifyAccessTokenCache = null
+let shopifyAccessTokenRequest = null
 
 const allowedOrigins = readAllowedOrigins()
 
@@ -411,6 +414,84 @@ function normalizeShopifyStoreDomain(value) {
     .replace(/\/.*$/, '')
 }
 
+function hasShopifyClientCredentials() {
+  return Boolean(process.env.SHOPIFY_CLIENT_ID && process.env.SHOPIFY_CLIENT_SECRET)
+}
+
+async function requestShopifyAccessToken(storeDomain) {
+  const response = await fetch(`https://${storeDomain}/admin/oauth/access_token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: process.env.SHOPIFY_CLIENT_ID,
+      client_secret: process.env.SHOPIFY_CLIENT_SECRET,
+    }),
+  })
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`Shopify token request failed (${response.status}): ${body}`)
+  }
+
+  const payload = await response.json()
+  const accessToken = payload.access_token
+  const expiresInSeconds = Number(payload.expires_in)
+
+  if (!accessToken) {
+    throw new Error('Shopify token request did not return an access token')
+  }
+
+  return {
+    accessToken,
+    expiresAt: Number.isFinite(expiresInSeconds) && expiresInSeconds > 0
+      ? Date.now() + (expiresInSeconds * 1000)
+      : Date.now() + (24 * 60 * 60 * 1000),
+  }
+}
+
+async function getShopifyAccessToken(storeDomain, options = {}) {
+  const fallbackToken = String(process.env.SHOPIFY_ADMIN_ACCESS_TOKEN ?? '').trim()
+
+  if (!hasShopifyClientCredentials()) {
+    if (fallbackToken) return fallbackToken
+
+    throw new Error('Missing SHOPIFY_ADMIN_ACCESS_TOKEN or SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET')
+  }
+
+  if (
+    !options.forceRefresh
+    && shopifyAccessTokenCache
+    && Date.now() < shopifyAccessTokenCache.expiresAt - shopifyAccessTokenRefreshBufferMs
+  ) {
+    return shopifyAccessTokenCache.accessToken
+  }
+
+  if (!options.forceRefresh && shopifyAccessTokenRequest) {
+    return shopifyAccessTokenRequest
+  }
+
+  shopifyAccessTokenRequest = requestShopifyAccessToken(storeDomain)
+    .then((tokenPayload) => {
+      shopifyAccessTokenCache = tokenPayload
+      return tokenPayload.accessToken
+    })
+    .catch((error) => {
+      if (fallbackToken && !options.forceRefresh) {
+        return fallbackToken
+      }
+
+      throw error
+    })
+    .finally(() => {
+      shopifyAccessTokenRequest = null
+    })
+
+  return shopifyAccessTokenRequest
+}
+
 function encodeShopifyParams(params) {
   return Object.entries(params)
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
@@ -675,24 +756,31 @@ async function loadSheetStatusLookup(forceRefresh = false) {
 }
 
 async function shopifyFetch(path, params = {}) {
-  const token = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN
   const storeDomain = normalizeShopifyStoreDomain(process.env.SHOPIFY_STORE_DOMAIN)
 
-  if (!token) {
-    throw new Error('Missing SHOPIFY_ADMIN_ACCESS_TOKEN')
-  }
   if (!storeDomain) {
     throw new Error('Missing SHOPIFY_STORE_DOMAIN')
   }
 
   const queryString = encodeShopifyParams(params)
   const url = `https://${storeDomain}/admin/api/${shopifyApiVersion}${path}${queryString ? `?${queryString}` : ''}`
-  const response = await fetch(url, {
+  const fetchWithToken = async (token) => fetch(url, {
     headers: {
       'Content-Type': 'application/json',
       'X-Shopify-Access-Token': token,
     },
   })
+
+  const token = await getShopifyAccessToken(storeDomain)
+  let response = await fetchWithToken(token)
+
+  if (response.status === 401 || response.status === 403) {
+    const refreshedToken = await getShopifyAccessToken(storeDomain, { forceRefresh: true })
+
+    if (refreshedToken !== token) {
+      response = await fetchWithToken(refreshedToken)
+    }
+  }
 
   if (!response.ok) {
     const body = await response.text()
