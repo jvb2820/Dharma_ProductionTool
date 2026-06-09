@@ -224,6 +224,10 @@ function normalizeTrackingNumber(value) {
   return String(value ?? '').replace(/\D/g, '')
 }
 
+function isOriginalDetoxTeaItem(value) {
+  return normalizeMatchText(value).startsWith('original detox tea')
+}
+
 function parseDisplayDate(value) {
   if (!value) return null
 
@@ -1001,6 +1005,12 @@ function readShopifyStatusObservation(fulfillments) {
     : ''
 }
 
+function hasShopifyShippingConfirmation(fulfillments) {
+  return fulfillments.some((fulfillment) =>
+    String(fulfillment.status ?? '').toLowerCase() === 'success',
+  )
+}
+
 function normalizeShopifyOrder(order) {
   const tracking = readTrackingNumbers(order)
   const fulfillments = order.fulfillments ?? []
@@ -1020,6 +1030,7 @@ function normalizeShopifyOrder(order) {
     status: shopifyStatus,
     statusSource: shopifyStatus ? 'shopify' : '',
     observation: shopifyStatus ? readShopifyStatusObservation(fulfillments) : '',
+    shopifyShippingConfirmation: hasShopifyShippingConfirmation(fulfillments),
   }
 }
 
@@ -1043,6 +1054,7 @@ function normalizeShopifyOrderLine(order, lineItem, lineItemIndex) {
     status: shopifyStatus,
     statusSource: shopifyStatus ? 'shopify' : '',
     observation: shopifyStatus ? readShopifyStatusObservation(fulfillments) : '',
+    shopifyShippingConfirmation: hasShopifyShippingConfirmation(fulfillments),
   }
 }
 
@@ -1067,6 +1079,18 @@ function applySheetStatus(row, sheetStatusLookup) {
     status: sheetStatus.status,
     statusSource: 'sheet',
     observation: sheetStatus.observation || row.observation,
+  }
+}
+
+function applyDetoxTeaShippingConfirmationStatus(row) {
+  if (!isOriginalDetoxTeaItem(row.item) || !row.shopifyShippingConfirmation) return row
+  if (String(row.status ?? '').toLowerCase().includes('failed')) return row
+
+  return {
+    ...row,
+    status: 'Delivered',
+    statusSource: 'shopify',
+    observation: row.observation || 'Original Detox Tea marked delivered from Shopify shipping confirmation',
   }
 }
 
@@ -1148,11 +1172,13 @@ async function buildShopifyTrackingReport(limit = 250) {
   })
   const sheetStatusLookup = await loadSheetStatusLookup()
   const rowsWithSheetStatus = rows.map((row) => applySheetStatus(row, sheetStatusLookup))
-  const uspsTrackingNumbers = rowsWithSheetStatus
+  const rowsWithDetoxTeaShippingConfirmationStatus = rowsWithSheetStatus
+    .map((row) => applyDetoxTeaShippingConfirmationStatus(row))
+  const uspsTrackingNumbers = rowsWithDetoxTeaShippingConfirmationStatus
     .filter((row) => !row.status)
     .flatMap((row) => String(row.tracking ?? '').split(','))
   const uspsTrackingLookup = await loadUspsTrackingStatuses(uspsTrackingNumbers)
-  const rowsWithStatuses = rowsWithSheetStatus.map((row) => applyUspsStatus(row, uspsTrackingLookup))
+  const rowsWithStatuses = rowsWithDetoxTeaShippingConfirmationStatus.map((row) => applyUspsStatus(row, uspsTrackingLookup))
   const rowsWithStatusCount = rowsWithStatuses.filter((row) => row.status).length
   const rowsWithUspsStatusCount = rowsWithStatuses.filter((row) => row.statusSource === 'usps').length
   const rowsWithShopifyStatusCount = rowsWithStatuses.filter((row) => row.statusSource === 'shopify').length
