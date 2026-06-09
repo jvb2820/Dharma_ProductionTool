@@ -1162,6 +1162,139 @@
   text-transform: uppercase;
 }
 
+.not-called-count-button {
+  display: inline-grid;
+  place-items: center;
+  min-width: 34px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid rgba(155, 17, 17, 0.22);
+  border-radius: 4px;
+  color: #9b1111;
+  background: #ffe0dc;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.not-called-count-button:hover:not(:disabled),
+.not-called-count-button:focus-visible {
+  border-color: #9b1111;
+  background: #ffd0ca;
+}
+
+.not-called-count-button:disabled {
+  border-color: transparent;
+  color: #213343;
+  background: transparent;
+  cursor: default;
+}
+
+.report-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(33, 51, 67, 0.42);
+}
+
+.report-modal {
+  width: min(100%, 620px);
+  max-height: min(720px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid #cbd6e2;
+  border-top: 4px solid #9b1111;
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(33, 51, 67, 0.26);
+}
+
+.report-modal-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #d5e0ea;
+  background: #f6f9fc;
+}
+
+.report-modal-header h2,
+.report-modal-header p {
+  margin: 0;
+}
+
+.report-modal-header h2 {
+  color: #213343;
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.report-modal-header p {
+  margin-top: 4px;
+  color: #516f90;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.report-modal-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #cbd6e2;
+  border-radius: 4px;
+  color: #33475b;
+  background: #fff;
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.report-modal-close:hover,
+.report-modal-close:focus-visible {
+  border-color: #9b1111;
+  color: #9b1111;
+}
+
+.not-called-list {
+  display: grid;
+  gap: 8px;
+  max-height: calc(100vh - 190px);
+  overflow-y: auto;
+  padding: 14px;
+  background: #fff;
+}
+
+.not-called-list-item {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid #d5e0ea;
+  border-left: 4px solid #9b1111;
+  background: #fff;
+}
+
+.not-called-list-item strong {
+  color: #213343;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.not-called-list-item span {
+  color: #33475b;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.not-called-list-item small {
+  color: #516f90;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
 .hubspot-date-group {
   display: inline-flex;
   align-items: center;

@@ -145,6 +145,7 @@ function HubSpotCallReport() {
   const [loadingStartedAt, setLoadingStartedAt] = useState(() => Date.now())
   const [loadingElapsedMs, setLoadingElapsedMs] = useState(0)
   const [averageRuntimeMs, setAverageRuntimeMs] = useState(() => readAverageRuntimeMs())
+  const [notCalledDialog, setNotCalledDialog] = useState(null)
   const averageRuntimeRef = useRef(averageRuntimeMs)
 
   const recordRuntime = useCallback((durationMs) => {
@@ -274,11 +275,13 @@ function HubSpotCallReport() {
       const current = lookup.get(assignedAgentName) ?? {
         totalAppointments: 0,
         notCalled: 0,
+        notCalledRows: [],
       }
 
       current.totalAppointments += 1
       if (row.called !== 'Called') {
         current.notCalled += 1
+        current.notCalledRows.push(row)
       }
 
       lookup.set(assignedAgentName, current)
@@ -316,12 +319,14 @@ function HubSpotCallReport() {
             const assignedStats = confirmedStatsByAssignedAgent.get(assignedAgent.assignedAgentName) ?? {
               totalAppointments: 0,
               notCalled: 0,
+              notCalledRows: [],
             }
 
             return {
               ...assignedAgent,
               totalAppointments: assignedStats.totalAppointments,
               notCalled: assignedStats.notCalled,
+              notCalledRows: assignedStats.notCalledRows,
             }
           })
           .sort((left, right) =>
@@ -333,6 +338,8 @@ function HubSpotCallReport() {
           sum + (confirmedStatsByAssignedAgent.get(assignedAgentName)?.totalAppointments ?? 0), 0),
         notCalled: [...agent.assignedAgents.keys()].reduce((sum, assignedAgentName) =>
           sum + (confirmedStatsByAssignedAgent.get(assignedAgentName)?.notCalled ?? 0), 0),
+        notCalledRows: [...agent.assignedAgents.keys()].flatMap((assignedAgentName) =>
+          confirmedStatsByAssignedAgent.get(assignedAgentName)?.notCalledRows ?? []),
         confirmedShare: totalConfirmedAppointments > 0
           ? Math.round((agent.confirmedCalled / totalConfirmedAppointments) * 100)
           : 0,
@@ -379,6 +386,22 @@ function HubSpotCallReport() {
     }
   }, [scheduleRows.length, status])
 
+  useEffect(() => {
+    if (!notCalledDialog) return undefined
+
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') {
+        setNotCalledDialog(null)
+      }
+    }
+
+    window.addEventListener('keydown', closeOnEscape)
+
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [notCalledDialog])
+
   function scrollTable(direction) {
     const tableScroller = tableScrollRef.current
     const topScroller = topScrollRef.current
@@ -390,6 +413,17 @@ function HubSpotCallReport() {
       left: direction * 360,
       behavior: 'smooth',
     })
+  }
+
+  function openNotCalledDialog(title, rows) {
+    setNotCalledDialog({
+      title,
+      rows,
+    })
+  }
+
+  function closeNotCalledDialog() {
+    setNotCalledDialog(null)
   }
 
   return (
@@ -523,14 +557,38 @@ function HubSpotCallReport() {
                       </span>
                       <strong role="cell">{assignedAgent.totalAppointments}</strong>
                       <strong role="cell">{assignedAgent.confirmedCalled}</strong>
-                      <strong role="cell">{assignedAgent.notCalled}</strong>
+                      <strong role="cell">
+                        <button
+                          className="not-called-count-button"
+                          disabled={assignedAgent.notCalled === 0}
+                          type="button"
+                          onClick={() => openNotCalledDialog(
+                            `${assignedAgent.assignedAgentName} - Not Called`,
+                            assignedAgent.notCalledRows,
+                          )}
+                        >
+                          {assignedAgent.notCalled}
+                        </button>
+                      </strong>
                     </div>
                   ))}
                   <div className="agent-assignment-row total" role="row">
                     <span role="cell">Total</span>
                     <strong role="cell">{agent.totalAppointments}</strong>
                     <strong role="cell">{agent.confirmedCalled}</strong>
-                    <strong role="cell">{agent.notCalled}</strong>
+                    <strong role="cell">
+                      <button
+                        className="not-called-count-button"
+                        disabled={agent.notCalled === 0}
+                        type="button"
+                        onClick={() => openNotCalledDialog(
+                          `${agent.callerName} assignments - Not Called`,
+                          agent.notCalledRows,
+                        )}
+                      >
+                        {agent.notCalled}
+                      </button>
+                    </strong>
                   </div>
                 </div>
               </article>
@@ -650,6 +708,53 @@ function HubSpotCallReport() {
           </table>
         </div>
       </div>
+
+      {notCalledDialog && (
+        <div
+          aria-labelledby="not-called-dialog-title"
+          aria-modal="true"
+          className="report-modal-backdrop"
+          role="dialog"
+          onClick={closeNotCalledDialog}
+        >
+          <div className="report-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="report-modal-header">
+              <div>
+                <h2 id="not-called-dialog-title">{notCalledDialog.title}</h2>
+                <p>
+                  {notCalledDialog.rows.length}
+                  {' '}
+                  confirmed appointment
+                  {notCalledDialog.rows.length === 1 ? '' : 's'}
+                  {' '}
+                  without a matching outbound call.
+                </p>
+              </div>
+              <button
+                aria-label="Close not called details"
+                className="report-modal-close"
+                type="button"
+                onClick={closeNotCalledDialog}
+              >
+                x
+              </button>
+            </div>
+            <div className="not-called-list">
+              {notCalledDialog.rows.map((slot) => (
+                <article className="not-called-list-item" key={slot.rowId}>
+                  <strong>{slot.clientEmail || 'No email on appointment'}</strong>
+                  <span>{slot.clientName || 'Unnamed client'}</span>
+                  <small>
+                    {formatActivityDate(slot)}
+                    {' - '}
+                    {slot.scheduledAgent || 'Unassigned'}
+                  </small>
+                </article>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }
