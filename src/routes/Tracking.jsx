@@ -14,6 +14,7 @@ const trackingHeaders = [
   'Status',
 ]
 const overdueBusinessDaysThreshold = 7
+const trackingAutoRefreshMs = 5 * 60 * 1000
 
 function displayCell(value) {
   return value || '-'
@@ -122,21 +123,35 @@ function Tracking() {
 
   useEffect(() => {
     let isMounted = true
+    let refreshInterval
 
-    loadShopifyTracking()
-      .then((data) => {
-        if (!isMounted) return
-        setReport(data)
-        setStatus('ready')
-      })
-      .catch((loadError) => {
-        if (!isMounted) return
-        setError(loadError.message)
-        setStatus('error')
-      })
+    const loadTracking = (options = {}) => {
+      if (options.showLoading) {
+        setStatus('loading')
+      }
+
+      return loadShopifyTracking(options)
+        .then((data) => {
+          if (!isMounted) return
+          setReport(data)
+          setStatus('ready')
+          setError('')
+        })
+        .catch((loadError) => {
+          if (!isMounted) return
+          setError(loadError.message)
+          setStatus((currentStatus) => (currentStatus === 'ready' ? currentStatus : 'error'))
+        })
+    }
+
+    loadTracking({ showLoading: true })
+    refreshInterval = window.setInterval(() => {
+      loadTracking({ forceRefresh: true })
+    }, trackingAutoRefreshMs)
 
     return () => {
       isMounted = false
+      window.clearInterval(refreshInterval)
     }
   }, [])
 

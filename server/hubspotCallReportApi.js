@@ -228,7 +228,7 @@ function normalizeTrackingNumber(value) {
 }
 
 function isOriginalDetoxTeaItem(value) {
-  return normalizeMatchText(value).startsWith('original detox tea')
+  return normalizeMatchText(value).includes('detox tea')
 }
 
 function parseDisplayDate(value) {
@@ -1160,6 +1160,13 @@ function applySheetStatus(row, sheetStatusLookup) {
     ?? sheetStatusLookup.byOrder.get(orderNumber)
 
   if (!sheetStatus) return row
+  if (isDeliveredStatus(row.status) && !isDeliveredStatus(sheetStatus.status)) {
+    return {
+      ...row,
+      deliveryDate: row.deliveryDate || sheetStatus.deliveryDate,
+      observation: row.observation || sheetStatus.observation,
+    }
+  }
 
   return {
     ...row,
@@ -1183,8 +1190,6 @@ function applyDetoxTeaShippingConfirmationStatus(row) {
 }
 
 function applyUspsStatus(row, uspsTrackingLookup) {
-  if (row.statusSource === 'sheet') return row
-
   const trackingNumbers = String(row.tracking ?? '')
     .split(',')
     .map((tracking) => normalizeTrackingNumber(tracking))
@@ -1194,6 +1199,7 @@ function applyUspsStatus(row, uspsTrackingLookup) {
     .find((trackingStatus) => trackingStatus?.status)
 
   if (!uspsStatus) return row
+  if (row.statusSource === 'sheet' && !isDeliveredStatus(uspsStatus.status)) return row
 
   return {
     ...row,
@@ -1263,7 +1269,7 @@ async function buildShopifyTrackingReport(limit = 250) {
   const rowsWithDetoxTeaShippingConfirmationStatus = rowsWithSheetStatus
     .map((row) => applyDetoxTeaShippingConfirmationStatus(row))
   const uspsTrackingNumbers = rowsWithDetoxTeaShippingConfirmationStatus
-    .filter((row) => !row.status)
+    .filter((row) => !isDeliveredStatus(row.status))
     .flatMap((row) => String(row.tracking ?? '').split(','))
   const uspsTrackingLookup = await loadUspsTrackingStatuses(uspsTrackingNumbers)
   const rowsWithStatuses = rowsWithDetoxTeaShippingConfirmationStatus.map((row) => applyUspsStatus(row, uspsTrackingLookup))
