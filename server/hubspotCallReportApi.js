@@ -10,6 +10,7 @@ const hubspotBaseUrl = 'https://api.hubapi.com'
 const shopifyApiVersion = process.env.SHOPIFY_API_VERSION ?? '2026-01'
 const defaultShopifyStatusSheetCsvUrl = 'https://docs.google.com/spreadsheets/d/1uBJLgzyYtBnPxR9x-DuHRcJz1DTJm3YSK7halebtWLg/gviz/tq?tqx=out:csv&gid=608356906'
 const supabaseTrackingTable = process.env.SUPABASE_TRACKING_TABLE ?? 'tracking_dashboard'
+const excludedTrackingOrderNumbers = readExcludedTrackingOrderNumbers()
 const connectedDispositionId = 'f240bbac-87c9-4f6e-bf70-924b57d47db7'
 const defaultAllowedOrigins = ['http://127.0.0.1:5173', 'http://localhost:5173']
 const reportTimeZone = process.env.HUBSPOT_REPORT_TIMEZONE ?? 'America/New_York'
@@ -215,6 +216,29 @@ function normalizeMatchText(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
+}
+
+function normalizeTrackingOrderKey(value) {
+  return String(value ?? '').replace(/\s+/g, '').trim().toLowerCase()
+}
+
+function readExcludedTrackingOrderNumbers() {
+  const configuredValue = process.env.SHOPIFY_TRACKING_EXCLUDED_ORDERS ?? 'cb_test_order'
+
+  return new Set(
+    configuredValue
+      .split(',')
+      .map(normalizeTrackingOrderKey)
+      .filter(Boolean),
+  )
+}
+
+function isExcludedTrackingOrder(row) {
+  return excludedTrackingOrderNumbers.has(normalizeTrackingOrderKey(row?.orderNumber ?? row?.order_number))
+}
+
+function filterExcludedTrackingOrders(rows) {
+  return rows.filter((row) => !isExcludedTrackingOrder(row))
 }
 
 function normalizeOrderNumber(value) {
@@ -606,7 +630,10 @@ function normalizeTrackingDatabaseRow(row) {
 async function upsertTrackingRowsToSupabase(rows, sourceUpdatedAt) {
   if (!hasSupabaseConfig() || rows.length === 0) return false
 
-  const databaseRows = rows.map((row) => buildTrackingDatabaseRow(row, sourceUpdatedAt))
+  const databaseRows = filterExcludedTrackingOrders(rows)
+    .map((row) => buildTrackingDatabaseRow(row, sourceUpdatedAt))
+
+  if (databaseRows.length === 0) return false
 
   for (let index = 0; index < databaseRows.length; index += 500) {
     const batch = databaseRows.slice(index, index + 500)
@@ -632,7 +659,7 @@ async function loadTrackingRowsFromSupabase() {
   })
   const rows = await supabaseRequest(`/${supabaseTrackingTable}?${params.toString()}`)
 
-  return Array.isArray(rows) ? rows.map(normalizeTrackingDatabaseRow) : []
+  return Array.isArray(rows) ? filterExcludedTrackingOrders(rows).map(normalizeTrackingDatabaseRow) : []
 }
 
 function parseCsv(text) {
