@@ -13,7 +13,7 @@ const trackingHeaders = [
   'Delivery Date',
   'Status',
 ]
-const overdueBusinessDaysThreshold = 7
+const overdueBusinessDaysThreshold = 5
 const trackingAutoRefreshMs = 5 * 60 * 1000
 
 function displayCell(value) {

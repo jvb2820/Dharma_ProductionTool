@@ -11,6 +11,7 @@ const shopifyApiVersion = process.env.SHOPIFY_API_VERSION ?? '2026-01'
 const defaultShopifyStatusSheetCsvUrl = 'https://docs.google.com/spreadsheets/d/1uBJLgzyYtBnPxR9x-DuHRcJz1DTJm3YSK7halebtWLg/gviz/tq?tqx=out:csv&gid=608356906'
 const supabaseTrackingTable = process.env.SUPABASE_TRACKING_TABLE ?? 'tracking_dashboard'
 const excludedTrackingOrderNumbers = readExcludedTrackingOrderNumbers()
+const overdueBusinessDaysThreshold = 5
 const connectedDispositionId = 'f240bbac-87c9-4f6e-bf70-924b57d47db7'
 const defaultAllowedOrigins = ['http://127.0.0.1:5173', 'http://localhost:5173']
 const reportTimeZone = process.env.HUBSPOT_REPORT_TIMEZONE ?? 'America/New_York'
@@ -596,7 +597,7 @@ function buildTrackingDatabaseRow(row, sourceUpdatedAt) {
     status: row.status || null,
     status_source: row.statusSource || null,
     business_days_open: businessDaysOpen,
-    is_overdue: !delivered && businessDaysOpen > 7,
+    is_overdue: !delivered && businessDaysOpen > overdueBusinessDaysThreshold,
     observation: row.observation || null,
     raw_data: row,
     source_updated_at: sourceUpdatedAt,
