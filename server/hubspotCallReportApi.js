@@ -21,7 +21,7 @@ const uspsTrackingCache = new Map()
 let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
-const callReportCacheVersion = 'host-v3'
+const callReportCacheVersion = 'contact-call-v1'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
 const hubspotMaxAttempts = 6
@@ -211,6 +211,10 @@ function normalizeText(value) {
   return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 }
 
+function normalizeEmail(value) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
 function normalizeMatchText(value) {
   return String(value ?? '')
     .normalize('NFD')
@@ -241,6 +245,16 @@ function isExcludedTrackingOrder(row) {
 
 function filterExcludedTrackingOrders(rows) {
   return rows.filter((row) => !isExcludedTrackingOrder(row))
+}
+
+function chunkArray(values, size) {
+  const chunks = []
+
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size))
+  }
+
+  return chunks
 }
 
 function normalizeOrderNumber(value) {
@@ -1495,6 +1509,125 @@ async function loadOutboundCallsForDate(selectedDate) {
   return rows
 }
 
+async function searchContactByEmail(email) {
+  const rows = await hubspotSearch('contacts', {
+    filterGroups: [
+      {
+        filters: [
+          { propertyName: 'email', operator: 'EQ', value: email },
+        ],
+      },
+    ],
+    properties: ['email'],
+    limit: 1,
+  })
+
+  return rows[0] ?? null
+}
+
+async function loadContactsByEmail(emails) {
+  const normalizedEmails = [...new Set(emails.map(normalizeEmail).filter(Boolean))]
+  const contactsByEmail = new Map()
+
+  for (const emailChunk of chunkArray(normalizedEmails, 100)) {
+    try {
+      const rows = await hubspotSearch('contacts', {
+        filterGroups: [
+          {
+            filters: [
+              { propertyName: 'email', operator: 'IN', values: emailChunk },
+            ],
+          },
+        ],
+        properties: ['email'],
+        limit: 100,
+      })
+
+      rows.forEach((contact) => {
+        const email = normalizeEmail(contact.properties?.email)
+        if (email) {
+          contactsByEmail.set(email, contact)
+        }
+      })
+    } catch {
+      for (const email of emailChunk) {
+        const contact = await searchContactByEmail(email)
+        if (contact) {
+          contactsByEmail.set(email, contact)
+        }
+      }
+    }
+  }
+
+  return contactsByEmail
+}
+
+async function batchReadCalls(callIds) {
+  const normalizedCallIds = [...new Set(callIds.map((callId) => String(callId ?? '').trim()).filter(Boolean))]
+  const calls = []
+
+  for (const callIdChunk of chunkArray(normalizedCallIds, 100)) {
+    const payload = await hubspotFetch('/crm/v3/objects/calls/batch/read', {
+      method: 'POST',
+      body: {
+        properties: [
+          'hs_timestamp',
+          'hs_call_direction',
+          'hs_call_disposition',
+          'hs_call_status',
+          'hs_call_to_number',
+          'hs_call_title',
+          'hubspot_owner_id',
+        ],
+        inputs: callIdChunk.map((id) => ({ id })),
+      },
+    })
+
+    calls.push(...(payload.results ?? []))
+  }
+
+  return calls
+}
+
+async function loadContactCallLookup(contactIds, owners) {
+  const normalizedContactIds = [...new Set(contactIds.map((contactId) => String(contactId ?? '').trim()).filter(Boolean))]
+  const callIdsByContactId = new Map()
+  const contactIdsByCallId = new Map()
+
+  for (const contactIdChunk of chunkArray(normalizedContactIds, 100)) {
+    const payload = await hubspotFetch('/crm/v4/associations/contacts/calls/batch/read', {
+      method: 'POST',
+      body: {
+        inputs: contactIdChunk.map((id) => ({ id })),
+      },
+    })
+
+    ;(payload.results ?? []).forEach((result) => {
+      const contactId = String(result.from?.id ?? '')
+      const callIds = (result.to ?? [])
+        .map((association) => String(association.toObjectId ?? ''))
+        .filter(Boolean)
+
+      callIdsByContactId.set(contactId, callIds)
+      callIds.forEach((callId) => {
+        const linkedContactIds = contactIdsByCallId.get(callId) ?? []
+        linkedContactIds.push(contactId)
+        contactIdsByCallId.set(callId, linkedContactIds)
+      })
+    })
+  }
+
+  const callsById = new Map(
+    (await batchReadCalls([...contactIdsByCallId.keys()]))
+      .map((call) => [String(call.id), normalizeCall(call, owners)]),
+  )
+
+  return [...callIdsByContactId.entries()].reduce((lookup, [contactId, callIds]) => {
+    lookup.set(contactId, callIds.map((callId) => callsById.get(callId)).filter(Boolean))
+    return lookup
+  }, new Map())
+}
+
 function normalizeCall(call, owners) {
   const properties = call.properties ?? {}
   const ownerId = properties.hubspot_owner_id ?? ''
@@ -1506,6 +1639,7 @@ function normalizeCall(call, owners) {
     callTime: properties.hs_timestamp,
     callTitle: properties.hs_call_title ?? '',
     phoneNumber: normalizePhone(properties.hs_call_to_number) || readPhoneFromText(properties.hs_call_title),
+    direction: properties.hs_call_direction ?? '',
     disposition:
       properties.hs_call_disposition === connectedDispositionId
         ? 'CONNECTED'
@@ -1526,19 +1660,27 @@ function matchesMeeting(call, meeting) {
   return clientName.length > 4 && callTitle.includes(clientName)
 }
 
-function findPriorOutboundCall(meeting, calls) {
+function isPriorSameDayOutboundCall(call, scheduledAt) {
+  if (!call.callTime || Number.isNaN(scheduledAt.getTime())) return false
+  if (String(call.direction ?? '').toUpperCase() !== 'OUTBOUND') return false
+
+  const callTime = new Date(call.callTime)
+  if (Number.isNaN(callTime.getTime())) return false
+
+  const appointmentDayStart = zonedStartOfDayUtc(getZonedDate(scheduledAt))
+
+  return callTime >= appointmentDayStart && callTime < scheduledAt
+}
+
+function findPriorOutboundCall(meeting, calls, options = {}) {
   const scheduledAt = new Date(meeting.scheduledAt)
+  const requireMeetingMatch = options.requireMeetingMatch ?? true
 
   return calls
     .filter((call) => {
-      if (!call.callTime || Number.isNaN(scheduledAt.getTime())) return false
-      const minutesBeforeAppointment = Math.round(
-        (scheduledAt.getTime() - new Date(call.callTime).getTime()) / 60000,
-      )
+      if (!isPriorSameDayOutboundCall(call, scheduledAt)) return false
 
-      if (minutesBeforeAppointment <= 0) return false
-
-      return matchesMeeting(call, meeting)
+      return requireMeetingMatch ? matchesMeeting(call, meeting) : true
     })
     .sort((left, right) => {
       const leftConnected = left.disposition === 'CONNECTED' ? 1 : 0
@@ -1578,7 +1720,7 @@ async function buildCallReport(selectedDate) {
   const scheduleResult = await loadScheduledContactsForDate(selectedDate)
   const outboundCalls = await loadOutboundCallsForDate(selectedDate)
   const calls = outboundCalls.map((call) => normalizeCall(call, owners))
-  const rows = scheduleResult.rows
+  const appointmentRows = scheduleResult.rows
     .map((meeting) => {
       const properties = meeting.properties ?? {}
       const meetingDetails = parseMeetingBody(properties.hs_meeting_body, properties.hs_meeting_title)
@@ -1587,7 +1729,7 @@ async function buildCallReport(selectedDate) {
       )
       const createdAt = properties.createdate ? new Date(properties.createdate) : scheduledAt
 
-      const row = {
+      return {
         rowId: meeting.id,
         meetingName: properties.hs_meeting_title || 'Meeting',
         meetingDescription: stripHtml(properties.hs_meeting_body),
@@ -1602,7 +1744,23 @@ async function buildCallReport(selectedDate) {
         clientEmail: meetingDetails.clientEmail,
         phoneNumber: meetingDetails.phoneNumber,
       }
-      const matchingCall = findPriorOutboundCall(row, calls)
+    })
+  const contactsByEmail = await loadContactsByEmail(appointmentRows.map((row) => row.clientEmail))
+  const contactCallLookup = await loadContactCallLookup(
+    [...contactsByEmail.values()].map((contact) => contact.id),
+    owners,
+  )
+  const rows = appointmentRows
+    .map((row) => {
+      const contact = contactsByEmail.get(normalizeEmail(row.clientEmail))
+      const contactCalls = contact
+        ? contactCallLookup.get(String(contact.id)) ?? []
+        : []
+      const contactTimelineCall = findPriorOutboundCall(row, contactCalls, {
+        requireMeetingMatch: false,
+      })
+      const fallbackCall = contactTimelineCall ? null : findPriorOutboundCall(row, calls)
+      const matchingCall = contactTimelineCall ?? fallbackCall
       const appointmentCancelled = isCancelledMeeting(row.meetingName)
 
       return {
@@ -1610,8 +1768,8 @@ async function buildCallReport(selectedDate) {
         callerName: matchingCall?.callerName ?? '',
         called: matchingCall ? 'Called' : 'Not Called',
         calledDetail: matchingCall
-          ? `${matchingCall.disposition || 'Outbound call'} at ${displayTime(matchingCall.callTime)}`
-          : 'No prior outbound call found',
+          ? `${contactTimelineCall ? 'Contact timeline' : 'Matched'} ${matchingCall.disposition || 'outbound call'} at ${displayTime(matchingCall.callTime)}`
+          : 'No same-day outbound call found before the appointment',
         confirmation: appointmentCancelled ? 'Not Confirmed' : 'Confirmed',
         confirmationDetail: appointmentCancelled
           ? 'Meeting name indicates the appointment was cancelled'

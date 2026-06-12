@@ -4,42 +4,7 @@ import { loadHubSpotCallReport } from '../services/hubspotCallReport'
 const reportTimeZone = 'America/New_York'
 const defaultAverageRuntimeMs = 45000
 const averageRuntimeCacheKey = 'hubspot-call-report-average-runtime-ms'
-const outboundCallerAssignments = [
-  {
-    callerName: 'Laura Sanchez',
-    agentNames: ['Alejandro Rivera', 'Leonardo Goncalves', 'Meribet Yazziet', 'María Claudia', 'Maria Claudia', 'MarÃ­a Claudia'],
-  },
-  {
-    callerName: 'Juan Camilo',
-    agentNames: [
-      'Alice F',
-      'Alice Strelow',
-      'Arles Martinez',
-      'Brayam Zuluaga',
-      'Edmilson Morales',
-      'Edmilson Velasquez',
-      'Maria Sandoval',
-      'Paula Alfonso',
-    ],
-  },
-]
-
-function normalizePersonName(value) {
-  return String(value ?? '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-}
-
-const outboundCallerByAgentName = new Map(outboundCallerAssignments.flatMap((assignment) =>
-  assignment.agentNames.map((agentName) => [normalizePersonName(agentName), assignment.callerName]),
-))
-
-function getAssignedOutboundCallerName(agentName, fallbackCallerName = '') {
-  return outboundCallerByAgentName.get(normalizePersonName(agentName)) || fallbackCallerName || 'Unassigned'
-}
+const missingCallerName = 'No caller found'
 
 function getNewYorkDate(offsetDays = 0) {
   const date = new Date()
@@ -306,10 +271,11 @@ function HubSpotCallReport() {
     ).length
   }, [scheduleRows])
   const confirmedCallsByAgent = useMemo(() => {
-    const confirmedRows = scheduleRows.filter((row) => row.confirmation === 'Confirmed')
-    const confirmedStatsByCallerAndAgent = confirmedRows.reduce((lookup, row) => {
+    const confirmedStatsByCallerAndAgent = scheduleRows.reduce((lookup, row) => {
       const meetingHostName = row.meetingHost || 'Unassigned'
-      const callerName = getAssignedOutboundCallerName(meetingHostName, row.callerName)
+      const callerName = row.called === 'Called' && row.callerName
+        ? row.callerName
+        : missingCallerName
       const caller = lookup.get(callerName) ?? {
         callerName,
         confirmedCalled: 0,
@@ -328,12 +294,12 @@ function HubSpotCallReport() {
 
       caller.totalAppointments += 1
       meetingHost.totalAppointments += 1
-      if (row.called !== 'Called') {
+      if (row.confirmation === 'Confirmed' && row.called !== 'Called') {
         caller.notCalled += 1
         meetingHost.notCalled += 1
         caller.notCalledRows.push(row)
         meetingHost.notCalledRows.push(row)
-      } else {
+      } else if (row.confirmation === 'Confirmed' && row.called === 'Called') {
         caller.confirmedCalled += 1
         meetingHost.confirmedCalled += 1
       }
@@ -352,8 +318,8 @@ function HubSpotCallReport() {
             || right.confirmedCalled - left.confirmedCalled
             || left.meetingHostName.localeCompare(right.meetingHostName),
           ),
-        confirmedShare: totalConfirmedAppointments > 0
-          ? Math.round((agent.totalAppointments / totalConfirmedAppointments) * 100)
+        confirmedShare: scheduleRows.length > 0
+          ? Math.round((agent.totalAppointments / scheduleRows.length) * 100)
           : 0,
       }))
       .sort((left, right) =>
@@ -361,7 +327,7 @@ function HubSpotCallReport() {
         || right.confirmedCalled - left.confirmedCalled
         || left.callerName.localeCompare(right.callerName),
       )
-  }, [scheduleRows, totalConfirmedAppointments])
+  }, [scheduleRows])
   const confirmedRate = scheduleRows.length > 0
     ? Math.round((totalConfirmedAppointments / scheduleRows.length) * 100)
     : 0
@@ -548,11 +514,11 @@ function HubSpotCallReport() {
                       {' '}
                       of
                       {' '}
-                      {totalConfirmedAppointments}
+                      {scheduleRows.length}
                     </span>
                   </strong>
                 </div>
-                <div className="agent-confirmed-bar" title={`${agent.totalAppointments} of ${totalConfirmedAppointments} confirmed appointments`}>
+                <div className="agent-confirmed-bar" title={`${agent.totalAppointments} of ${scheduleRows.length} appointments`}>
                   <span style={{ width: `${agent.confirmedShare}%` }} />
                 </div>
                 <div className="agent-assignment-table" role="table" aria-label={`${agent.callerName} appointments by agent`}>
