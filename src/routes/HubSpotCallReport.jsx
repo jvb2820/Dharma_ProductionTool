@@ -43,6 +43,8 @@ const outboundCallerAssignments = [
 
 function normalizePersonName(value) {
   const normalizedName = String(value ?? '')
+    .replace(/Ã­a/g, 'ia')
+    .replace(/Ã/g, 'a')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
@@ -58,6 +60,9 @@ function getDisplayPersonName(value) {
   const normalizedName = normalizePersonName(value)
 
   if (normalizedName === 'laura sanchez') return 'Laura Sanchez'
+  if (normalizedName === 'maria claudia') return 'María Claudia'
+  if (normalizedName === 'alice strelow') return 'Alice F'
+  if (normalizedName === 'edmilson morales') return 'Edmilson Velasquez'
 
   return value
 }
@@ -352,6 +357,9 @@ function HubSpotCallReport() {
         scheduledAt: row.scheduledAt,
         callerName,
         qualifyingCallers: row.qualifyingCallers ?? (callerName ? [callerName] : []),
+        previousDayCallerName: row.previousDayCallerName ?? '',
+        previousDayCallers: row.previousDayCallers ?? [],
+        previousDayCalledDetail: row.previousDayCalledDetail ?? '',
         called: callerName ? 'Called' : 'Not Called',
         calledDetail: callerName
           ? row.calledDetail || 'Outbound caller found before the appointment'
@@ -378,6 +386,7 @@ function HubSpotCallReport() {
   const outboundCallerOptions = useMemo(() => {
     return [...new Set([
       ...outboundCallerAssignments.map((assignment) => assignment.ownerName),
+      ...outboundCallerAssignments.flatMap((assignment) => assignment.agentNames),
       ...scheduleRows.map((row) => row.callerName),
       ...scheduleRows.map((row) => row.meetingHost),
     ].filter(Boolean).map(getDisplayPersonName))]
@@ -459,6 +468,56 @@ function HubSpotCallReport() {
         || right.confirmedCalled - left.confirmedCalled
         || left.callerName.localeCompare(right.callerName),
       )
+  }, [outboundAssignmentOverrides, scheduleRows])
+  const juanPreviousDayCalling = useMemo(() => {
+    const assignment = outboundCallerAssignments.find((entry) => entry.id === 'juan-secondary')
+    if (!assignment) return null
+
+    const assignedCallerName = outboundAssignmentOverrides[assignment.ownerName] || assignment.ownerName
+    const assignedCallerKey = normalizePersonName(assignedCallerName)
+    const agentRows = createEmptyAssignmentStats({
+      ...assignment,
+      id: 'juan-previous-day',
+    }, assignedCallerName)
+    const assignmentByAgentName = new Map(
+      assignment.agentNames.map((agentName) => [normalizePersonName(agentName), agentName]),
+    )
+
+    scheduleRows.forEach((row) => {
+      const meetingHostName = row.meetingHost || 'Unassigned'
+      const rosterAgentName = assignmentByAgentName.get(normalizePersonName(meetingHostName))
+      if (!rosterAgentName) return
+
+      const meetingHost = agentRows.meetingHosts.get(normalizePersonName(rosterAgentName))
+      const previousDayCalledByAssignedCaller = (row.previousDayCallers ?? [])
+        .some((callerName) => normalizePersonName(callerName) === assignedCallerKey)
+
+      agentRows.totalAppointments += 1
+      meetingHost.totalAppointments += 1
+
+      if (row.confirmation === 'Confirmed' && !previousDayCalledByAssignedCaller) {
+        agentRows.notCalled += 1
+        meetingHost.notCalled += 1
+        agentRows.notCalledRows.push(row)
+        meetingHost.notCalledRows.push(row)
+      } else if (row.confirmation === 'Confirmed' && previousDayCalledByAssignedCaller) {
+        agentRows.confirmedCalled += 1
+        meetingHost.confirmedCalled += 1
+      }
+    })
+
+    return {
+      ...agentRows,
+      meetingHosts: [...agentRows.meetingHosts.values()]
+        .filter((meetingHost) => meetingHost.totalAppointments > 0)
+        .sort((left, right) =>
+          right.totalAppointments - left.totalAppointments
+          || left.meetingHostName.localeCompare(right.meetingHostName),
+        ),
+      confirmedShare: scheduleRows.length > 0
+        ? Math.round((agentRows.totalAppointments / scheduleRows.length) * 100)
+        : 0,
+    }
   }, [outboundAssignmentOverrides, scheduleRows])
   const confirmedRate = scheduleRows.length > 0
     ? Math.round((totalConfirmedAppointments / scheduleRows.length) * 100)
@@ -725,6 +784,80 @@ function HubSpotCallReport() {
                 </div>
               </article>
             ))}
+            {juanPreviousDayCalling && (
+            <article className="agent-confirmed-card previous-day-analytics" aria-label="Juan Camilo previous day calling">
+              <div className="agent-confirmed-header">
+                <div>
+                  <h3 title={`${juanPreviousDayCalling.callerName} previous day calling`}>
+                    {juanPreviousDayCalling.callerName}
+                    {' '}
+                    Previous Day Calling
+                  </h3>
+                  <p>Juan team previous-day calls for Paula Alfonso and Maria Sandoval.</p>
+                </div>
+                <strong>
+                  {juanPreviousDayCalling.totalAppointments}
+                  <span>
+                    {' '}
+                    of
+                    {' '}
+                    {scheduleRows.length}
+                  </span>
+                </strong>
+              </div>
+              <div className="agent-confirmed-bar" title={`${juanPreviousDayCalling.totalAppointments} of ${scheduleRows.length} appointments`}>
+                <span style={{ width: `${juanPreviousDayCalling.confirmedShare}%` }} />
+              </div>
+              <div className="agent-assignment-table" role="table" aria-label="Juan Camilo previous day calling by agent">
+                <div className="agent-assignment-row heading" role="row">
+                  <span role="columnheader">Agent</span>
+                  <span role="columnheader">Total Appt. / Agent</span>
+                  <span role="columnheader">Not Called</span>
+                  <span role="columnheader">OBS</span>
+                </div>
+                {juanPreviousDayCalling.meetingHosts.map((meetingHost) => (
+                  <div className="agent-assignment-row" role="row" key={meetingHost.meetingHostName}>
+                    <span role="cell" title={meetingHost.meetingHostName}>
+                      {meetingHost.meetingHostName}
+                    </span>
+                    <strong role="cell">{meetingHost.totalAppointments}</strong>
+                    <strong role="cell">
+                      <button
+                        className="not-called-count-button"
+                        disabled={meetingHost.notCalled === 0}
+                        type="button"
+                        onClick={() => openNotCalledDialog(
+                          `${meetingHost.meetingHostName} - Previous Day Not Called`,
+                          meetingHost.notCalledRows,
+                        )}
+                      >
+                        {meetingHost.notCalled}
+                      </button>
+                    </strong>
+                    <strong role="cell">-</strong>
+                  </div>
+                ))}
+                <div className="agent-assignment-row total" role="row">
+                  <span role="cell">Total</span>
+                  <strong role="cell">{juanPreviousDayCalling.totalAppointments}</strong>
+                  <strong role="cell">
+                    <button
+                      className="not-called-count-button"
+                      disabled={juanPreviousDayCalling.notCalled === 0}
+                      type="button"
+                      onClick={() => openNotCalledDialog(
+                        'Juan Camilo Previous Day - Not Called',
+                        juanPreviousDayCalling.notCalledRows,
+                      )}
+                    >
+                      {juanPreviousDayCalling.notCalled}
+                    </button>
+                  </strong>
+                  <strong role="cell">-</strong>
+                </div>
+              </div>
+            </article>
+            )}
           </div>
         </section>
       )}
@@ -881,6 +1014,9 @@ function HubSpotCallReport() {
                     {' - '}
                     {slot.meetingHost || 'Unassigned'}
                   </small>
+                  {slot.previousDayCalledDetail && (
+                    <small>{slot.previousDayCalledDetail}</small>
+                  )}
                 </article>
               ))}
             </div>

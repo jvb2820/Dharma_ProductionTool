@@ -21,7 +21,7 @@ const uspsTrackingCache = new Map()
 let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
-const callReportCacheVersion = 'contact-call-v2'
+const callReportCacheVersion = 'contact-call-v3'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
 const hubspotMaxAttempts = 6
@@ -1602,6 +1602,28 @@ function isPriorSameDayOutboundCall(call, scheduledAt) {
   return callTime >= appointmentDayStart && callTime < scheduledAt
 }
 
+function isPreviousDayOutboundCall(call, scheduledAt) {
+  if (!call.callTime || Number.isNaN(scheduledAt.getTime())) return false
+  if (String(call.direction ?? '').toUpperCase() !== 'OUTBOUND') return false
+
+  const callTime = new Date(call.callTime)
+  if (Number.isNaN(callTime.getTime())) return false
+
+  const appointmentDayStart = zonedStartOfDayUtc(getZonedDate(scheduledAt))
+  const previousDayStart = new Date(appointmentDayStart.getTime() - 24 * 60 * 60 * 1000)
+
+  return callTime >= previousDayStart && callTime < appointmentDayStart
+}
+
+function sortCallsByConnectionAndTime(left, right) {
+  const leftConnected = left.disposition === 'CONNECTED' ? 1 : 0
+  const rightConnected = right.disposition === 'CONNECTED' ? 1 : 0
+
+  if (leftConnected !== rightConnected) return rightConnected - leftConnected
+
+  return new Date(right.callTime) - new Date(left.callTime)
+}
+
 function getPriorOutboundCalls(meeting, calls, options = {}) {
   const scheduledAt = new Date(meeting.scheduledAt)
   const requireMeetingMatch = options.requireMeetingMatch ?? true
@@ -1612,18 +1634,24 @@ function getPriorOutboundCalls(meeting, calls, options = {}) {
 
       return requireMeetingMatch ? matchesMeeting(call, meeting) : true
     })
-    .sort((left, right) => {
-      const leftConnected = left.disposition === 'CONNECTED' ? 1 : 0
-      const rightConnected = right.disposition === 'CONNECTED' ? 1 : 0
-
-      if (leftConnected !== rightConnected) return rightConnected - leftConnected
-
-      return new Date(right.callTime) - new Date(left.callTime)
-    })
+    .sort(sortCallsByConnectionAndTime)
 }
 
 function findPriorOutboundCall(meeting, calls, options = {}) {
   return getPriorOutboundCalls(meeting, calls, options)[0]
+}
+
+function getPreviousDayOutboundCalls(meeting, calls, options = {}) {
+  const scheduledAt = new Date(meeting.scheduledAt)
+  const requireMeetingMatch = options.requireMeetingMatch ?? true
+
+  return calls
+    .filter((call) => {
+      if (!isPreviousDayOutboundCall(call, scheduledAt)) return false
+
+      return requireMeetingMatch ? matchesMeeting(call, meeting) : true
+    })
+    .sort(sortCallsByConnectionAndTime)
 }
 
 function buildCallerAnalytics(rows) {
@@ -1709,12 +1737,27 @@ async function buildCallReport(selectedDate) {
       const qualifyingCalls = contactTimelineCall
         ? getPriorOutboundCalls(row, contactCalls, { requireMeetingMatch: false })
         : getPriorOutboundCalls(row, calls)
+      const previousDayContactCalls = getPreviousDayOutboundCalls(row, contactCalls, {
+        requireMeetingMatch: false,
+      })
+      const previousDayFallbackCalls = previousDayContactCalls.length > 0
+        ? []
+        : getPreviousDayOutboundCalls(row, calls)
+      const previousDayCalls = previousDayContactCalls.length > 0
+        ? previousDayContactCalls
+        : previousDayFallbackCalls
+      const previousDayCall = previousDayCalls[0]
       const appointmentCancelled = isCancelledMeeting(row.meetingName)
 
       return {
         ...row,
         callerName: matchingCall?.callerName ?? '',
         qualifyingCallers: [...new Set(qualifyingCalls.map((call) => call.callerName).filter(Boolean))],
+        previousDayCallerName: previousDayCall?.callerName ?? '',
+        previousDayCallers: [...new Set(previousDayCalls.map((call) => call.callerName).filter(Boolean))],
+        previousDayCalledDetail: previousDayCall
+          ? `${previousDayContactCalls.length > 0 ? 'Previous day contact timeline' : 'Previous day matched'} ${previousDayCall.disposition || 'outbound call'} at ${displayTime(previousDayCall.callTime)}`
+          : 'No previous-day outbound call found',
         called: matchingCall ? 'Called' : 'Not Called',
         calledDetail: matchingCall
           ? `${contactTimelineCall ? 'Contact timeline' : 'Matched'} ${matchingCall.disposition || 'outbound call'} at ${displayTime(matchingCall.callTime)}`

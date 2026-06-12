@@ -1133,6 +1133,15 @@
   animation: card-pop 420ms ease-out both;
 }
 
+.previous-day-analytics {
+  border-left-color: #00a4bd;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(240, 249, 251, 0.82));
+}
+
+.previous-day-analytics .agent-confirmed-bar span {
+  background: linear-gradient(90deg, #00a4bd, #4fb06d);
+}
+
 .agent-confirmed-header {
   display: flex;
   align-items: start;
