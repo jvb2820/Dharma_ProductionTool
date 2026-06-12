@@ -944,7 +944,7 @@
 
 .outbound-assignment-control {
   display: grid;
-  grid-template-columns: minmax(86px, auto) minmax(0, 1fr);
+  grid-template-columns: minmax(86px, auto) minmax(0, 1fr) auto;
   align-items: stretch;
   min-height: 40px;
   overflow: hidden;
@@ -983,6 +983,30 @@
 .outbound-assignment-control:focus-within {
   border-color: #00a4bd;
   box-shadow: 0 0 0 2px rgba(0, 164, 189, 0.16);
+}
+
+.outbound-assignment-change {
+  min-width: 78px;
+  border: 0;
+  border-left: 1px solid rgba(0, 164, 189, 0.24);
+  color: #fff;
+  background: #00a4bd;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 900;
+  padding: 0 12px;
+  text-transform: uppercase;
+}
+
+.outbound-assignment-change:hover,
+.outbound-assignment-change:focus-visible {
+  background: #007f93;
+}
+
+.outbound-assignment-change:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .analytics-summary-grid {

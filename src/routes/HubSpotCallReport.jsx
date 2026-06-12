@@ -42,20 +42,36 @@ const outboundCallerAssignments = [
 ]
 
 function normalizePersonName(value) {
-  return String(value ?? '')
+  const normalizedName = String(value ?? '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
+
+  if (normalizedName.startsWith('laura alejandra sanchez')) return 'laura sanchez'
+
+  return normalizedName
 }
 
 function getDisplayPersonName(value) {
   const normalizedName = normalizePersonName(value)
 
-  if (normalizedName.startsWith('laura alejandra sanchez')) return 'Laura Sanchez'
+  if (normalizedName === 'laura sanchez') return 'Laura Sanchez'
 
   return value
+}
+
+function normalizeOutboundAssignmentOverrides(value) {
+  return Object.entries(value ?? {}).reduce((lookup, [ownerName, assignedCallerName]) => {
+    const displayName = getDisplayPersonName(assignedCallerName)
+
+    if (displayName && displayName !== ownerName) {
+      lookup[ownerName] = displayName
+    }
+
+    return lookup
+  }, {})
 }
 
 function createEmptyAssignmentStats(assignment, assignedCallerName = assignment.ownerName) {
@@ -188,7 +204,12 @@ function writeAverageRuntimeMs(value) {
 
 function readOutboundAssignmentOverrides() {
   try {
-    return JSON.parse(window.localStorage.getItem(outboundAssignmentStorageKey)) ?? {}
+    const overrides = normalizeOutboundAssignmentOverrides(
+      JSON.parse(window.localStorage.getItem(outboundAssignmentStorageKey)) ?? {},
+    )
+
+    writeOutboundAssignmentOverrides(overrides)
+    return overrides
   } catch {
     return {}
   }
@@ -237,6 +258,7 @@ function HubSpotCallReport() {
   const [averageRuntimeMs, setAverageRuntimeMs] = useState(() => readAverageRuntimeMs())
   const [notCalledDialog, setNotCalledDialog] = useState(null)
   const [outboundAssignmentOverrides, setOutboundAssignmentOverrides] = useState(() => readOutboundAssignmentOverrides())
+  const [draftOutboundAssignmentOverrides, setDraftOutboundAssignmentOverrides] = useState(() => readOutboundAssignmentOverrides())
   const averageRuntimeRef = useRef(averageRuntimeMs)
 
   const recordRuntime = useCallback((durationMs) => {
@@ -318,20 +340,55 @@ function HubSpotCallReport() {
       })
   }
 
-  function updateOutboundAssignment(ownerName, assignedCallerName) {
-    setOutboundAssignmentOverrides((currentOverrides) => {
+  function updateDraftOutboundAssignment(ownerName, assignedCallerName) {
+    setDraftOutboundAssignmentOverrides((currentOverrides) => {
+      const displayName = getDisplayPersonName(assignedCallerName)
       const nextOverrides = {
         ...currentOverrides,
-        [ownerName]: assignedCallerName,
+        [ownerName]: displayName,
       }
 
-      if (assignedCallerName === ownerName) {
+      if (displayName === ownerName) {
         delete nextOverrides[ownerName]
       }
 
-      writeOutboundAssignmentOverrides(nextOverrides)
       return nextOverrides
     })
+  }
+
+  function applyOutboundAssignment(ownerName) {
+    const assignedCallerName = draftOutboundAssignmentOverrides[ownerName] || ownerName
+    const displayName = getDisplayPersonName(assignedCallerName)
+    const nextOverrides = {
+      ...outboundAssignmentOverrides,
+      [ownerName]: displayName,
+    }
+
+    if (displayName === ownerName) {
+      delete nextOverrides[ownerName]
+    }
+
+    writeOutboundAssignmentOverrides(nextOverrides)
+    setOutboundAssignmentOverrides(nextOverrides)
+    setDraftOutboundAssignmentOverrides(nextOverrides)
+
+    const startedAt = Date.now()
+
+    setStatus('loading')
+    setError('')
+    setLoadingStartedAt(startedAt)
+    setLoadingElapsedMs(0)
+
+    loadHubSpotCallReport(selectedDate, { forceRefresh: true })
+      .then((data) => {
+        recordRuntime(Date.now() - startedAt)
+        setReport(data)
+        setStatus('ready')
+      })
+      .catch((loadError) => {
+        setError(loadError.message)
+        setStatus('error')
+      })
   }
 
   const scheduleRows = useMemo(() => {
@@ -353,6 +410,7 @@ function HubSpotCallReport() {
         meetingHost: row.meetingHost,
         scheduledAt: row.scheduledAt,
         callerName,
+        qualifyingCallers: row.qualifyingCallers ?? (callerName ? [callerName] : []),
         called: callerName ? 'Called' : 'Not Called',
         calledDetail: callerName
           ? row.calledDetail || 'Outbound caller found before the appointment'
@@ -410,6 +468,11 @@ function HubSpotCallReport() {
         ownerName: missingCallerName,
         agentNames: [],
       }, missingCallerName)
+      const assignedCallerCalled = assignedGroup
+        ? (row.qualifyingCallers ?? []).some((callerName) =>
+          normalizePersonName(callerName) === normalizePersonName(caller.callerName),
+        )
+        : row.called === 'Called'
       const meetingHost = caller.meetingHosts.get(meetingHostName) ?? {
         meetingHostName,
         totalAppointments: 0,
@@ -420,12 +483,12 @@ function HubSpotCallReport() {
 
       caller.totalAppointments += 1
       meetingHost.totalAppointments += 1
-      if (row.confirmation === 'Confirmed' && row.called !== 'Called') {
+      if (row.confirmation === 'Confirmed' && !assignedCallerCalled) {
         caller.notCalled += 1
         meetingHost.notCalled += 1
         caller.notCalledRows.push(row)
         meetingHost.notCalledRows.push(row)
-      } else if (row.confirmation === 'Confirmed' && row.called === 'Called') {
+      } else if (row.confirmation === 'Confirmed' && assignedCallerCalled) {
         caller.confirmedCalled += 1
         meetingHost.confirmedCalled += 1
       }
@@ -603,22 +666,38 @@ function HubSpotCallReport() {
             <span>{timeZoneLabel}</span>
           </div>
           <div className="outbound-assignment-controls" aria-label="Outbound caller assignments">
-            {outboundAssignmentOwners.map((ownerName) => (
-              <label className="outbound-assignment-control" key={ownerName}>
-                <span>{ownerName.split(' ')[0]} team</span>
-                <select
-                  aria-label={`${ownerName} outbound caller assignment`}
-                  value={outboundAssignmentOverrides[ownerName] || ownerName}
-                  onChange={(event) => updateOutboundAssignment(ownerName, event.target.value)}
-                >
-                  {outboundCallerOptions.map((callerName) => (
-                    <option key={callerName} value={callerName}>
-                      {callerName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ))}
+            {outboundAssignmentOwners.map((ownerName) => {
+              const appliedCallerName = outboundAssignmentOverrides[ownerName] || ownerName
+              const draftCallerName = draftOutboundAssignmentOverrides[ownerName] || ownerName
+              const assignmentChanged = draftCallerName !== appliedCallerName
+
+              return (
+                <div className="outbound-assignment-control" key={ownerName}>
+                  <span>{ownerName.split(' ')[0]} team</span>
+                  <select
+                    aria-label={`${ownerName} outbound caller assignment`}
+                    value={draftCallerName}
+                    onChange={(event) => updateDraftOutboundAssignment(ownerName, event.target.value)}
+                  >
+                    {outboundCallerOptions.map((callerName) => (
+                      <option key={callerName} value={callerName}>
+                        {callerName}
+                      </option>
+                    ))}
+                  </select>
+                  {assignmentChanged && (
+                    <button
+                      className="outbound-assignment-change"
+                      disabled={status === 'loading'}
+                      type="button"
+                      onClick={() => applyOutboundAssignment(ownerName)}
+                    >
+                      Change
+                    </button>
+                  )}
+                </div>
+              )
+            })}
           </div>
           <div className="analytics-summary-grid">
             <div className="analytics-total-card appointments">

@@ -21,7 +21,7 @@ const uspsTrackingCache = new Map()
 let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
-const callReportCacheVersion = 'contact-call-v1'
+const callReportCacheVersion = 'contact-call-v2'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
 const hubspotMaxAttempts = 6
@@ -1602,7 +1602,7 @@ function isPriorSameDayOutboundCall(call, scheduledAt) {
   return callTime >= appointmentDayStart && callTime < scheduledAt
 }
 
-function findPriorOutboundCall(meeting, calls, options = {}) {
+function getPriorOutboundCalls(meeting, calls, options = {}) {
   const scheduledAt = new Date(meeting.scheduledAt)
   const requireMeetingMatch = options.requireMeetingMatch ?? true
 
@@ -1619,7 +1619,11 @@ function findPriorOutboundCall(meeting, calls, options = {}) {
       if (leftConnected !== rightConnected) return rightConnected - leftConnected
 
       return new Date(right.callTime) - new Date(left.callTime)
-    })[0]
+    })
+}
+
+function findPriorOutboundCall(meeting, calls, options = {}) {
+  return getPriorOutboundCalls(meeting, calls, options)[0]
 }
 
 function buildCallerAnalytics(rows) {
@@ -1702,11 +1706,15 @@ async function buildCallReport(selectedDate) {
       })
       const fallbackCall = contactTimelineCall ? null : findPriorOutboundCall(row, calls)
       const matchingCall = contactTimelineCall ?? fallbackCall
+      const qualifyingCalls = contactTimelineCall
+        ? getPriorOutboundCalls(row, contactCalls, { requireMeetingMatch: false })
+        : getPriorOutboundCalls(row, calls)
       const appointmentCancelled = isCancelledMeeting(row.meetingName)
 
       return {
         ...row,
         callerName: matchingCall?.callerName ?? '',
+        qualifyingCallers: [...new Set(qualifyingCalls.map((call) => call.callerName).filter(Boolean))],
         called: matchingCall ? 'Called' : 'Not Called',
         calledDetail: matchingCall
           ? `${contactTimelineCall ? 'Contact timeline' : 'Matched'} ${matchingCall.disposition || 'outbound call'} at ${displayTime(matchingCall.callTime)}`
