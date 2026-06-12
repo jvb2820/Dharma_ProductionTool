@@ -21,6 +21,7 @@ const uspsTrackingCache = new Map()
 let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
+const callReportCacheVersion = 'host-v3'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
 const hubspotMaxAttempts = 6
@@ -367,7 +368,24 @@ function readBodyField(text, label) {
   return text.match(pattern)?.[1]?.trim() ?? ''
 }
 
-function parseMeetingBody(body) {
+function cleanMeetingPersonName(value) {
+  return String(value ?? '')
+    .split(/\s+\|\s+|\s+Organized by\b/i)[0]
+    .replace(/^by\s+/i, '')
+    .trim()
+}
+
+function readMeetingHost(text, title) {
+  const bodyHost = cleanMeetingPersonName(readBodyField(text, 'Hosted by'))
+
+  if (bodyHost) return bodyHost
+
+  const titleHost = String(title ?? '').match(/\bhosted by\s+(.+?)(?:\s+with\b|$)/i)?.[1]
+
+  return cleanMeetingPersonName(titleHost)
+}
+
+function parseMeetingBody(body, title = '') {
   const text = stripHtml(body)
 
   return {
@@ -375,6 +393,7 @@ function parseMeetingBody(body) {
     clientEmail: readBodyField(text, 'Email'),
     phoneNumber: readBodyField(text, 'Phone'),
     scheduledAgent: readBodyField(text, 'Agent Lead Management') || readBodyField(text, 'Agent'),
+    meetingHost: readMeetingHost(text, title),
   }
 }
 
@@ -1361,7 +1380,53 @@ async function hubspotSearch(objectType, body) {
 async function loadOwners() {
   const payload = await hubspotFetch('/crm/v3/owners?limit=100&archived=false')
 
-  return new Map((payload.results ?? []).map((owner) => [String(owner.id), owner]))
+  return (payload.results ?? []).reduce((lookup, owner) => {
+    lookup.set(String(owner.id), owner)
+    if (owner.email) {
+      lookup.set(String(owner.email).toLowerCase(), owner)
+    }
+    if (owner.userId) {
+      lookup.set(String(owner.userId), owner)
+    }
+
+    return lookup
+  }, new Map())
+}
+
+function readFirstOwnerName(owners, value) {
+  return String(value ?? '')
+    .split(/[;,]/)
+    .map((ownerId) => ownerId.trim())
+    .filter(Boolean)
+    .map((ownerId) => ownerDisplayName(owners.get(ownerId)))
+    .find(Boolean) ?? ''
+}
+
+function readMeetingHostEmailFromExternalUrl(value) {
+  try {
+    const eventId = new URL(String(value ?? '')).searchParams.get('eid')
+    if (!eventId) return ''
+
+    const decodedEventId = Buffer.from(eventId, 'base64').toString('utf8')
+
+    return decodedEventId.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]?.toLowerCase() ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function resolveMeetingHost(properties, meetingDetails, owners) {
+  const externalUrlHostEmail = readMeetingHostEmailFromExternalUrl(properties.hs_meeting_external_url)
+
+  return meetingDetails.meetingHost
+    || ownerDisplayName(owners.get(externalUrlHostEmail))
+    || readFirstOwnerName(owners, properties.hubspot_owner_id)
+    || readFirstOwnerName(owners, properties.hs_attendee_owner_ids)
+    || readFirstOwnerName(owners, properties.hs_all_owner_ids)
+    || readFirstOwnerName(owners, properties.hs_user_ids_of_all_owners)
+    || readFirstOwnerName(owners, properties.hs_created_by_user_id)
+    || readFirstOwnerName(owners, properties.hs_created_by)
+    || readFirstOwnerName(owners, properties.hs_object_source_user_id)
 }
 
 async function loadScheduledContactsForDate(selectedDate) {
@@ -1382,8 +1447,15 @@ async function loadScheduledContactsForDate(selectedDate) {
       'hs_meeting_title',
       'hs_meeting_body',
       'hs_meeting_outcome',
+      'hs_meeting_external_url',
       'createdate',
       'hubspot_owner_id',
+      'hs_attendee_owner_ids',
+      'hs_all_owner_ids',
+      'hs_user_ids_of_all_owners',
+      'hs_created_by_user_id',
+      'hs_created_by',
+      'hs_object_source_user_id',
     ],
     limit: 100,
     sorts: ['hs_timestamp'],
@@ -1509,7 +1581,7 @@ async function buildCallReport(selectedDate) {
   const rows = scheduleResult.rows
     .map((meeting) => {
       const properties = meeting.properties ?? {}
-      const meetingDetails = parseMeetingBody(properties.hs_meeting_body)
+      const meetingDetails = parseMeetingBody(properties.hs_meeting_body, properties.hs_meeting_title)
       const scheduledAt = new Date(
         properties.hs_meeting_start_time ?? properties.hs_timestamp,
       )
@@ -1525,6 +1597,7 @@ async function buildCallReport(selectedDate) {
         createdAt: createdAt?.toISOString() ?? null,
         scheduledAt: scheduledAt?.toISOString() ?? null,
         scheduledAgent: meetingDetails.scheduledAgent,
+        meetingHost: resolveMeetingHost(properties, meetingDetails, owners),
         clientName: meetingDetails.clientName || properties.hs_meeting_title || 'Meeting',
         clientEmail: meetingDetails.clientEmail,
         phoneNumber: meetingDetails.phoneNumber,
@@ -1574,7 +1647,7 @@ const server = createServer(async (request, response) => {
   if (requestUrl.pathname === '/api/hubspot/call-report' && request.method === 'GET') {
     const selectedDate = requestUrl.searchParams.get('date')
     const forceRefresh = requestUrl.searchParams.get('refresh') === '1'
-    const cacheKey = selectedDate || 'default'
+    const cacheKey = `${callReportCacheVersion}:${selectedDate || 'default'}`
     const cachedReport = reportCache.get(cacheKey)
 
     if (!forceRefresh && cachedReport && Date.now() - cachedReport.cachedAt < (cachedReport.ttlMs ?? currentDateCacheTtlMs)) {

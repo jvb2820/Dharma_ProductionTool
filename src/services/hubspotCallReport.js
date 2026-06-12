@@ -9,7 +9,7 @@ const agentRoster = [
 const reportTimes = ['2:00 AM', '2:20 AM', '2:30 AM', '2:40 AM', '3:00 AM', '3:20 AM', '3:30 AM']
 const reportTimeZone = 'America/New_York'
 const sessionCachePrefix = 'hubspot-call-report'
-const sessionCacheVersion = 'v1'
+const sessionCacheVersion = 'v3'
 
 function getYesterdayDate() {
   const yesterday = new Date()
@@ -136,6 +136,7 @@ function normalizeHubSpotCall(call) {
     agentId: properties.agent_id ?? matchedAgent?.id ?? '',
     agentName: properties.agentName ?? matchedAgent?.name ?? '',
     scheduledAgent: properties.scheduledAgent ?? '',
+    meetingHost: properties.meetingHost ?? '',
     clientName: properties.client_name ?? properties.hs_call_title ?? 'Outbound call',
     clientEmail: properties.clientEmail ?? properties.client_email ?? properties.email ?? '',
     phoneNumber: properties.phone_number ?? properties.hs_call_to_number ?? '',

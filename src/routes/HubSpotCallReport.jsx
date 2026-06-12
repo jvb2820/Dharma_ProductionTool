@@ -4,6 +4,42 @@ import { loadHubSpotCallReport } from '../services/hubspotCallReport'
 const reportTimeZone = 'America/New_York'
 const defaultAverageRuntimeMs = 45000
 const averageRuntimeCacheKey = 'hubspot-call-report-average-runtime-ms'
+const outboundCallerAssignments = [
+  {
+    callerName: 'Laura Sanchez',
+    agentNames: ['Alejandro Rivera', 'Leonardo Goncalves', 'Meribet Yazziet', 'María Claudia', 'Maria Claudia', 'MarÃ­a Claudia'],
+  },
+  {
+    callerName: 'Juan Camilo',
+    agentNames: [
+      'Alice F',
+      'Alice Strelow',
+      'Arles Martinez',
+      'Brayam Zuluaga',
+      'Edmilson Morales',
+      'Edmilson Velasquez',
+      'Maria Sandoval',
+      'Paula Alfonso',
+    ],
+  },
+]
+
+function normalizePersonName(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+const outboundCallerByAgentName = new Map(outboundCallerAssignments.flatMap((assignment) =>
+  assignment.agentNames.map((agentName) => [normalizePersonName(agentName), assignment.callerName]),
+))
+
+function getAssignedOutboundCallerName(agentName, fallbackCallerName = '') {
+  return outboundCallerByAgentName.get(normalizePersonName(agentName)) || fallbackCallerName || 'Unassigned'
+}
 
 function getNewYorkDate(offsetDays = 0) {
   const date = new Date()
@@ -243,6 +279,7 @@ function HubSpotCallReport() {
         clientEmail: row.clientEmail,
         phoneNumber: row.phoneNumber,
         scheduledAgent: row.scheduledAgent,
+        meetingHost: row.meetingHost,
         scheduledAt: row.scheduledAt,
         callerName,
         called: callerName ? 'Called' : 'Not Called',
@@ -270,78 +307,53 @@ function HubSpotCallReport() {
   }, [scheduleRows])
   const confirmedCallsByAgent = useMemo(() => {
     const confirmedRows = scheduleRows.filter((row) => row.confirmation === 'Confirmed')
-    const confirmedStatsByAssignedAgent = confirmedRows.reduce((lookup, row) => {
-      const assignedAgentName = row.scheduledAgent || 'Unassigned'
-      const current = lookup.get(assignedAgentName) ?? {
+    const confirmedStatsByCallerAndAgent = confirmedRows.reduce((lookup, row) => {
+      const meetingHostName = row.meetingHost || 'Unassigned'
+      const callerName = getAssignedOutboundCallerName(meetingHostName, row.callerName)
+      const caller = lookup.get(callerName) ?? {
+        callerName,
+        confirmedCalled: 0,
         totalAppointments: 0,
+        notCalled: 0,
+        notCalledRows: [],
+        meetingHosts: new Map(),
+      }
+      const meetingHost = caller.meetingHosts.get(meetingHostName) ?? {
+        meetingHostName,
+        totalAppointments: 0,
+        confirmedCalled: 0,
         notCalled: 0,
         notCalledRows: [],
       }
 
-      current.totalAppointments += 1
+      caller.totalAppointments += 1
+      meetingHost.totalAppointments += 1
       if (row.called !== 'Called') {
-        current.notCalled += 1
-        current.notCalledRows.push(row)
+        caller.notCalled += 1
+        meetingHost.notCalled += 1
+        caller.notCalledRows.push(row)
+        meetingHost.notCalledRows.push(row)
+      } else {
+        caller.confirmedCalled += 1
+        meetingHost.confirmedCalled += 1
       }
 
-      lookup.set(assignedAgentName, current)
-      return lookup
-    }, new Map())
-    const callerRows = confirmedRows.reduce((lookup, row) => {
-      if (row.called !== 'Called' || !row.callerName) {
-        return lookup
-      }
-
-      const assignedAgentName = row.scheduledAgent || 'Unassigned'
-      const current = lookup.get(row.callerName) ?? {
-        callerName: row.callerName,
-        confirmedCalled: 0,
-        assignedAgents: new Map(),
-      }
-      const assignedAgent = current.assignedAgents.get(assignedAgentName) ?? {
-        assignedAgentName,
-        confirmedCalled: 0,
-      }
-
-      current.confirmedCalled += 1
-      assignedAgent.confirmedCalled += 1
-
-      current.assignedAgents.set(assignedAgentName, assignedAgent)
-      lookup.set(row.callerName, current)
+      caller.meetingHosts.set(meetingHostName, meetingHost)
+      lookup.set(callerName, caller)
       return lookup
     }, new Map())
 
-    return [...callerRows.values()]
+    return [...confirmedStatsByCallerAndAgent.values()]
       .map((agent) => ({
         ...agent,
-        assignedAgents: [...agent.assignedAgents.values()]
-          .map((assignedAgent) => {
-            const assignedStats = confirmedStatsByAssignedAgent.get(assignedAgent.assignedAgentName) ?? {
-              totalAppointments: 0,
-              notCalled: 0,
-              notCalledRows: [],
-            }
-
-            return {
-              ...assignedAgent,
-              totalAppointments: assignedStats.totalAppointments,
-              notCalled: assignedStats.notCalled,
-              notCalledRows: assignedStats.notCalledRows,
-            }
-          })
+        meetingHosts: [...agent.meetingHosts.values()]
           .sort((left, right) =>
             right.totalAppointments - left.totalAppointments
             || right.confirmedCalled - left.confirmedCalled
-            || left.assignedAgentName.localeCompare(right.assignedAgentName),
+            || left.meetingHostName.localeCompare(right.meetingHostName),
           ),
-        totalAppointments: [...agent.assignedAgents.keys()].reduce((sum, assignedAgentName) =>
-          sum + (confirmedStatsByAssignedAgent.get(assignedAgentName)?.totalAppointments ?? 0), 0),
-        notCalled: [...agent.assignedAgents.keys()].reduce((sum, assignedAgentName) =>
-          sum + (confirmedStatsByAssignedAgent.get(assignedAgentName)?.notCalled ?? 0), 0),
-        notCalledRows: [...agent.assignedAgents.keys()].flatMap((assignedAgentName) =>
-          confirmedStatsByAssignedAgent.get(assignedAgentName)?.notCalledRows ?? []),
         confirmedShare: totalConfirmedAppointments > 0
-          ? Math.round((agent.confirmedCalled / totalConfirmedAppointments) * 100)
+          ? Math.round((agent.totalAppointments / totalConfirmedAppointments) * 100)
           : 0,
       }))
       .sort((left, right) =>
@@ -522,7 +534,7 @@ function HubSpotCallReport() {
               </div>
             </div>
           </div>
-          <div className="agent-confirmed-grid" aria-label="Confirmed calls by agent">
+          <div className="agent-confirmed-grid" aria-label="Confirmed appointments by outbound caller and agent">
             {confirmedCallsByAgent.length === 0 && (
               <div className="agent-confirmed-empty">No confirmed appointments were called before the appointment.</div>
             )}
@@ -531,7 +543,7 @@ function HubSpotCallReport() {
                 <div className="agent-confirmed-header">
                   <h3 title={agent.callerName}>{agent.callerName}</h3>
                   <strong>
-                    {agent.confirmedCalled}
+                    {agent.totalAppointments}
                     <span>
                       {' '}
                       of
@@ -540,55 +552,55 @@ function HubSpotCallReport() {
                     </span>
                   </strong>
                 </div>
-                <div className="agent-confirmed-bar" title={`${agent.confirmedCalled} of ${totalConfirmedAppointments} confirmed appointments`}>
+                <div className="agent-confirmed-bar" title={`${agent.totalAppointments} of ${totalConfirmedAppointments} confirmed appointments`}>
                   <span style={{ width: `${agent.confirmedShare}%` }} />
                 </div>
-                <div className="agent-assignment-table" role="table" aria-label={`${agent.callerName} confirmed calls by activity assigned agent`}>
+                <div className="agent-assignment-table" role="table" aria-label={`${agent.callerName} appointments by agent`}>
                   <div className="agent-assignment-row heading" role="row">
-                    <span role="columnheader">Activity Assigned To</span>
-                    <span role="columnheader">Total Appt.</span>
-                    <span role="columnheader">Confirmed Called</span>
+                    <span role="columnheader">Agent</span>
+                    <span role="columnheader">Total Appt. / Agent</span>
                     <span role="columnheader">Not Called</span>
+                    <span role="columnheader">OBS</span>
                   </div>
-                  {agent.assignedAgents.map((assignedAgent) => (
-                    <div className="agent-assignment-row" role="row" key={assignedAgent.assignedAgentName}>
-                      <span role="cell" title={assignedAgent.assignedAgentName}>
-                        {assignedAgent.assignedAgentName}
+                  {agent.meetingHosts.map((meetingHost) => (
+                    <div className="agent-assignment-row" role="row" key={meetingHost.meetingHostName}>
+                      <span role="cell" title={meetingHost.meetingHostName}>
+                        {meetingHost.meetingHostName}
                       </span>
-                      <strong role="cell">{assignedAgent.totalAppointments}</strong>
-                      <strong role="cell">{assignedAgent.confirmedCalled}</strong>
+                      <strong role="cell">{meetingHost.totalAppointments}</strong>
                       <strong role="cell">
                         <button
                           className="not-called-count-button"
-                          disabled={assignedAgent.notCalled === 0}
+                          disabled={meetingHost.notCalled === 0}
                           type="button"
                           onClick={() => openNotCalledDialog(
-                            `${assignedAgent.assignedAgentName} - Not Called`,
-                            assignedAgent.notCalledRows,
+                            `${meetingHost.meetingHostName} - Not Called`,
+                            meetingHost.notCalledRows,
                           )}
                         >
-                          {assignedAgent.notCalled}
+                          {meetingHost.notCalled}
                         </button>
                       </strong>
+                      <strong role="cell">-</strong>
                     </div>
                   ))}
                   <div className="agent-assignment-row total" role="row">
                     <span role="cell">Total</span>
                     <strong role="cell">{agent.totalAppointments}</strong>
-                    <strong role="cell">{agent.confirmedCalled}</strong>
                     <strong role="cell">
                       <button
                         className="not-called-count-button"
                         disabled={agent.notCalled === 0}
                         type="button"
                         onClick={() => openNotCalledDialog(
-                          `${agent.callerName} assignments - Not Called`,
+                          `${agent.callerName} meeting hosts - Not Called`,
                           agent.notCalledRows,
                         )}
                       >
                         {agent.notCalled}
                       </button>
                     </strong>
+                    <strong role="cell">-</strong>
                   </div>
                 </div>
               </article>
@@ -747,7 +759,7 @@ function HubSpotCallReport() {
                   <small>
                     {formatActivityDate(slot)}
                     {' - '}
-                    {slot.scheduledAgent || 'Unassigned'}
+                    {slot.meetingHost || 'Unassigned'}
                   </small>
                 </article>
               ))}
