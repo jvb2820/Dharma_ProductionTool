@@ -50,6 +50,14 @@ function normalizePersonName(value) {
     .trim()
 }
 
+function getDisplayPersonName(value) {
+  const normalizedName = normalizePersonName(value)
+
+  if (normalizedName.startsWith('laura alejandra sanchez')) return 'Laura Sanchez'
+
+  return value
+}
+
 function createEmptyAssignmentStats(assignment, assignedCallerName = assignment.ownerName) {
   return {
     ...assignment,
@@ -373,7 +381,7 @@ function HubSpotCallReport() {
       ...outboundCallerAssignments.map((assignment) => assignment.ownerName),
       ...scheduleRows.map((row) => row.callerName),
       ...scheduleRows.map((row) => row.meetingHost),
-    ].filter(Boolean))]
+    ].filter(Boolean).map(getDisplayPersonName))]
       .sort((left, right) => left.localeCompare(right))
   }, [scheduleRows])
   const outboundAssignmentOwners = useMemo(() => {
@@ -597,7 +605,7 @@ function HubSpotCallReport() {
           <div className="outbound-assignment-controls" aria-label="Outbound caller assignments">
             {outboundAssignmentOwners.map((ownerName) => (
               <label className="outbound-assignment-control" key={ownerName}>
-                <span>{ownerName}</span>
+                <span>{ownerName.split(' ')[0]} team</span>
                 <select
                   aria-label={`${ownerName} outbound caller assignment`}
                   value={outboundAssignmentOverrides[ownerName] || ownerName}
