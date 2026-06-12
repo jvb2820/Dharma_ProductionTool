@@ -25,7 +25,7 @@ const callReportCacheVersion = 'contact-call-v1'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
 const hubspotMaxAttempts = 6
-const hubspotRequestSpacingMs = 700
+const hubspotRequestSpacingMs = 250
 const uspsTrackingCacheTtlMs = 30 * 60 * 1000
 const shopifyAccessTokenRefreshBufferMs = 5 * 60 * 1000
 let lastHubspotRequestAt = 0
@@ -1509,123 +1509,53 @@ async function loadOutboundCallsForDate(selectedDate) {
   return rows
 }
 
-async function searchContactByEmail(email) {
-  const rows = await hubspotSearch('contacts', {
-    filterGroups: [
-      {
-        filters: [
-          { propertyName: 'email', operator: 'EQ', value: email },
-        ],
-      },
-    ],
-    properties: ['email'],
-    limit: 1,
-  })
-
-  return rows[0] ?? null
-}
-
-async function loadContactsByEmail(emails) {
-  const normalizedEmails = [...new Set(emails.map(normalizeEmail).filter(Boolean))]
-  const contactsByEmail = new Map()
-
-  for (const emailChunk of chunkArray(normalizedEmails, 100)) {
-    try {
-      const rows = await hubspotSearch('contacts', {
-        filterGroups: [
-          {
-            filters: [
-              { propertyName: 'email', operator: 'IN', values: emailChunk },
-            ],
-          },
-        ],
-        properties: ['email'],
-        limit: 100,
-      })
-
-      rows.forEach((contact) => {
-        const email = normalizeEmail(contact.properties?.email)
-        if (email) {
-          contactsByEmail.set(email, contact)
-        }
-      })
-    } catch {
-      for (const email of emailChunk) {
-        const contact = await searchContactByEmail(email)
-        if (contact) {
-          contactsByEmail.set(email, contact)
-        }
-      }
-    }
-  }
-
-  return contactsByEmail
-}
-
-async function batchReadCalls(callIds) {
+async function loadContactIdsByCallId(callIds) {
   const normalizedCallIds = [...new Set(callIds.map((callId) => String(callId ?? '').trim()).filter(Boolean))]
-  const calls = []
+  const contactIdsByCallId = new Map()
 
   for (const callIdChunk of chunkArray(normalizedCallIds, 100)) {
-    const payload = await hubspotFetch('/crm/v3/objects/calls/batch/read', {
+    const payload = await hubspotFetch('/crm/v4/associations/calls/contacts/batch/read', {
       method: 'POST',
       body: {
-        properties: [
-          'hs_timestamp',
-          'hs_call_direction',
-          'hs_call_disposition',
-          'hs_call_status',
-          'hs_call_to_number',
-          'hs_call_title',
-          'hubspot_owner_id',
-        ],
         inputs: callIdChunk.map((id) => ({ id })),
       },
     })
 
-    calls.push(...(payload.results ?? []))
+    ;(payload.results ?? []).forEach((result) => {
+      const callId = String(result.from?.id ?? '')
+      const contactIds = (result.to ?? [])
+        .map((association) => String(association.toObjectId ?? ''))
+        .filter(Boolean)
+
+      contactIdsByCallId.set(callId, contactIds)
+    })
   }
 
-  return calls
+  return contactIdsByCallId
 }
 
-async function loadContactCallLookup(contactIds, owners) {
+async function loadContactEmailsById(contactIds) {
   const normalizedContactIds = [...new Set(contactIds.map((contactId) => String(contactId ?? '').trim()).filter(Boolean))]
-  const callIdsByContactId = new Map()
-  const contactIdsByCallId = new Map()
+  const contactEmailsById = new Map()
 
   for (const contactIdChunk of chunkArray(normalizedContactIds, 100)) {
-    const payload = await hubspotFetch('/crm/v4/associations/contacts/calls/batch/read', {
+    const payload = await hubspotFetch('/crm/v3/objects/contacts/batch/read', {
       method: 'POST',
       body: {
+        properties: ['email'],
         inputs: contactIdChunk.map((id) => ({ id })),
       },
     })
 
-    ;(payload.results ?? []).forEach((result) => {
-      const contactId = String(result.from?.id ?? '')
-      const callIds = (result.to ?? [])
-        .map((association) => String(association.toObjectId ?? ''))
-        .filter(Boolean)
-
-      callIdsByContactId.set(contactId, callIds)
-      callIds.forEach((callId) => {
-        const linkedContactIds = contactIdsByCallId.get(callId) ?? []
-        linkedContactIds.push(contactId)
-        contactIdsByCallId.set(callId, linkedContactIds)
-      })
+    ;(payload.results ?? []).forEach((contact) => {
+      const email = normalizeEmail(contact.properties?.email)
+      if (email) {
+        contactEmailsById.set(String(contact.id), email)
+      }
     })
   }
 
-  const callsById = new Map(
-    (await batchReadCalls([...contactIdsByCallId.keys()]))
-      .map((call) => [String(call.id), normalizeCall(call, owners)]),
-  )
-
-  return [...callIdsByContactId.entries()].reduce((lookup, [contactId, callIds]) => {
-    lookup.set(contactId, callIds.map((callId) => callsById.get(callId)).filter(Boolean))
-    return lookup
-  }, new Map())
+  return contactEmailsById
 }
 
 function normalizeCall(call, owners) {
@@ -1716,10 +1646,29 @@ function buildCallerAnalytics(rows) {
 }
 
 async function buildCallReport(selectedDate) {
-  const owners = await loadOwners()
-  const scheduleResult = await loadScheduledContactsForDate(selectedDate)
-  const outboundCalls = await loadOutboundCallsForDate(selectedDate)
+  const [owners, scheduleResult, outboundCalls] = await Promise.all([
+    loadOwners(),
+    loadScheduledContactsForDate(selectedDate),
+    loadOutboundCallsForDate(selectedDate),
+  ])
   const calls = outboundCalls.map((call) => normalizeCall(call, owners))
+  const contactIdsByCallId = await loadContactIdsByCallId(calls.map((call) => call.callId))
+  const contactEmailsById = await loadContactEmailsById(
+    [...contactIdsByCallId.values()].flat(),
+  )
+  const callsByContactEmail = calls.reduce((lookup, call) => {
+    const contactEmails = (contactIdsByCallId.get(String(call.callId)) ?? [])
+      .map((contactId) => contactEmailsById.get(String(contactId)))
+      .filter(Boolean)
+
+    contactEmails.forEach((email) => {
+      const contactCalls = lookup.get(email) ?? []
+      contactCalls.push(call)
+      lookup.set(email, contactCalls)
+    })
+
+    return lookup
+  }, new Map())
   const appointmentRows = scheduleResult.rows
     .map((meeting) => {
       const properties = meeting.properties ?? {}
@@ -1745,17 +1694,9 @@ async function buildCallReport(selectedDate) {
         phoneNumber: meetingDetails.phoneNumber,
       }
     })
-  const contactsByEmail = await loadContactsByEmail(appointmentRows.map((row) => row.clientEmail))
-  const contactCallLookup = await loadContactCallLookup(
-    [...contactsByEmail.values()].map((contact) => contact.id),
-    owners,
-  )
   const rows = appointmentRows
     .map((row) => {
-      const contact = contactsByEmail.get(normalizeEmail(row.clientEmail))
-      const contactCalls = contact
-        ? contactCallLookup.get(String(contact.id)) ?? []
-        : []
+      const contactCalls = callsByContactEmail.get(normalizeEmail(row.clientEmail)) ?? []
       const contactTimelineCall = findPriorOutboundCall(row, contactCalls, {
         requireMeetingMatch: false,
       })

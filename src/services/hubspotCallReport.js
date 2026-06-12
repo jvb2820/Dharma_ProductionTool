@@ -219,7 +219,7 @@ export async function loadHubSpotCallReport(date, options = {}) {
   }
 
   const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), 180000)
+  const timeoutId = window.setTimeout(() => controller.abort(), 360000)
   let response
 
   try {
