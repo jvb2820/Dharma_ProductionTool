@@ -4,7 +4,72 @@ import { loadHubSpotCallReport } from '../services/hubspotCallReport'
 const reportTimeZone = 'America/New_York'
 const defaultAverageRuntimeMs = 45000
 const averageRuntimeCacheKey = 'hubspot-call-report-average-runtime-ms'
+const outboundAssignmentStorageKey = 'hubspot-call-report-outbound-assignments'
 const missingCallerName = 'No caller found'
+const outboundCallerAssignments = [
+  {
+    id: 'laura-main',
+    ownerName: 'Laura Sanchez',
+    agentNames: [
+      'Alejandro Rivera',
+      'Leonardo Goncalves',
+      'Meribet Yazziet',
+      'María Claudia',
+      'Maria Claudia',
+      'MarÃ­a Claudia',
+    ],
+  },
+  {
+    id: 'juan-main',
+    ownerName: 'Juan Camilo',
+    agentNames: [
+      'Alice F',
+      'Alice Strelow',
+      'Arles Martinez',
+      'Brayam Zuluaga',
+      'Edmilson Morales',
+      'Edmilson Velasquez',
+    ],
+  },
+  {
+    id: 'juan-secondary',
+    ownerName: 'Juan Camilo',
+    agentNames: [
+      'Maria Sandoval',
+      'Paula Alfonso',
+    ],
+  },
+]
+
+function normalizePersonName(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function createEmptyAssignmentStats(assignment, assignedCallerName = assignment.ownerName) {
+  return {
+    ...assignment,
+    callerName: assignedCallerName,
+    confirmedCalled: 0,
+    totalAppointments: 0,
+    notCalled: 0,
+    notCalledRows: [],
+    meetingHosts: new Map(assignment.agentNames.map((agentName) => [
+      normalizePersonName(agentName),
+      {
+        meetingHostName: agentName,
+        totalAppointments: 0,
+        confirmedCalled: 0,
+        notCalled: 0,
+        notCalledRows: [],
+      },
+    ])),
+  }
+}
 
 function getNewYorkDate(offsetDays = 0) {
   const date = new Date()
@@ -113,6 +178,22 @@ function writeAverageRuntimeMs(value) {
   }
 }
 
+function readOutboundAssignmentOverrides() {
+  try {
+    return JSON.parse(window.localStorage.getItem(outboundAssignmentStorageKey)) ?? {}
+  } catch {
+    return {}
+  }
+}
+
+function writeOutboundAssignmentOverrides(value) {
+  try {
+    window.localStorage.setItem(outboundAssignmentStorageKey, JSON.stringify(value))
+  } catch {
+    // Assignment overrides are optional; the defaults still match the roster.
+  }
+}
+
 function getMeetingName(slot) {
   return slot.meetingName || `${slot.clientName || 'Client'} Analysis with Dharma Clinic`
 }
@@ -147,6 +228,7 @@ function HubSpotCallReport() {
   const [loadingElapsedMs, setLoadingElapsedMs] = useState(0)
   const [averageRuntimeMs, setAverageRuntimeMs] = useState(() => readAverageRuntimeMs())
   const [notCalledDialog, setNotCalledDialog] = useState(null)
+  const [outboundAssignmentOverrides, setOutboundAssignmentOverrides] = useState(() => readOutboundAssignmentOverrides())
   const averageRuntimeRef = useRef(averageRuntimeMs)
 
   const recordRuntime = useCallback((durationMs) => {
@@ -228,6 +310,22 @@ function HubSpotCallReport() {
       })
   }
 
+  function updateOutboundAssignment(ownerName, assignedCallerName) {
+    setOutboundAssignmentOverrides((currentOverrides) => {
+      const nextOverrides = {
+        ...currentOverrides,
+        [ownerName]: assignedCallerName,
+      }
+
+      if (assignedCallerName === ownerName) {
+        delete nextOverrides[ownerName]
+      }
+
+      writeOutboundAssignmentOverrides(nextOverrides)
+      return nextOverrides
+    })
+  }
+
   const scheduleRows = useMemo(() => {
     return report.rows.map((row) => {
       const meetingName = row.meetingName
@@ -270,20 +368,40 @@ function HubSpotCallReport() {
       row.confirmation === 'Confirmed' && row.called === 'Called',
     ).length
   }, [scheduleRows])
+  const outboundCallerOptions = useMemo(() => {
+    return [...new Set([
+      ...outboundCallerAssignments.map((assignment) => assignment.ownerName),
+      ...scheduleRows.map((row) => row.callerName),
+      ...scheduleRows.map((row) => row.meetingHost),
+    ].filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right))
+  }, [scheduleRows])
+  const outboundAssignmentOwners = useMemo(() => {
+    return [...new Set(outboundCallerAssignments.map((assignment) => assignment.ownerName))]
+  }, [])
   const confirmedCallsByAgent = useMemo(() => {
-    const confirmedStatsByCallerAndAgent = scheduleRows.reduce((lookup, row) => {
+    const assignmentRows = outboundCallerAssignments.map((assignment) => {
+      const assignedCallerName = outboundAssignmentOverrides[assignment.ownerName] || assignment.ownerName
+
+      return createEmptyAssignmentStats(assignment, assignedCallerName)
+    })
+    const assignmentByAgentName = assignmentRows.reduce((lookup, assignment) => {
+      assignment.agentNames.forEach((agentName) => {
+        lookup.set(normalizePersonName(agentName), assignment)
+      })
+
+      return lookup
+    }, new Map())
+    const unassignedRows = new Map()
+
+    scheduleRows.forEach((row) => {
       const meetingHostName = row.meetingHost || 'Unassigned'
-      const callerName = row.called === 'Called' && row.callerName
-        ? row.callerName
-        : missingCallerName
-      const caller = lookup.get(callerName) ?? {
-        callerName,
-        confirmedCalled: 0,
-        totalAppointments: 0,
-        notCalled: 0,
-        notCalledRows: [],
-        meetingHosts: new Map(),
-      }
+      const assignedGroup = assignmentByAgentName.get(normalizePersonName(meetingHostName))
+      const caller = assignedGroup ?? unassignedRows.get(missingCallerName) ?? createEmptyAssignmentStats({
+        id: 'unassigned',
+        ownerName: missingCallerName,
+        agentNames: [],
+      }, missingCallerName)
       const meetingHost = caller.meetingHosts.get(meetingHostName) ?? {
         meetingHostName,
         totalAppointments: 0,
@@ -305,14 +423,16 @@ function HubSpotCallReport() {
       }
 
       caller.meetingHosts.set(meetingHostName, meetingHost)
-      lookup.set(callerName, caller)
-      return lookup
-    }, new Map())
+      if (!assignedGroup) {
+        unassignedRows.set(missingCallerName, caller)
+      }
+    })
 
-    return [...confirmedStatsByCallerAndAgent.values()]
+    return [...assignmentRows, ...unassignedRows.values()]
       .map((agent) => ({
         ...agent,
         meetingHosts: [...agent.meetingHosts.values()]
+          .filter((meetingHost) => meetingHost.totalAppointments > 0)
           .sort((left, right) =>
             right.totalAppointments - left.totalAppointments
             || right.confirmedCalled - left.confirmedCalled
@@ -327,7 +447,7 @@ function HubSpotCallReport() {
         || right.confirmedCalled - left.confirmedCalled
         || left.callerName.localeCompare(right.callerName),
       )
-  }, [scheduleRows])
+  }, [outboundAssignmentOverrides, scheduleRows])
   const confirmedRate = scheduleRows.length > 0
     ? Math.round((totalConfirmedAppointments / scheduleRows.length) * 100)
     : 0
@@ -474,6 +594,24 @@ function HubSpotCallReport() {
             </div>
             <span>{timeZoneLabel}</span>
           </div>
+          <div className="outbound-assignment-controls" aria-label="Outbound caller assignments">
+            {outboundAssignmentOwners.map((ownerName) => (
+              <label className="outbound-assignment-control" key={ownerName}>
+                <span>{ownerName}</span>
+                <select
+                  aria-label={`${ownerName} outbound caller assignment`}
+                  value={outboundAssignmentOverrides[ownerName] || ownerName}
+                  onChange={(event) => updateOutboundAssignment(ownerName, event.target.value)}
+                >
+                  {outboundCallerOptions.map((callerName) => (
+                    <option key={callerName} value={callerName}>
+                      {callerName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
           <div className="analytics-summary-grid">
             <div className="analytics-total-card appointments">
               <span>Appointments</span>
@@ -505,7 +643,7 @@ function HubSpotCallReport() {
               <div className="agent-confirmed-empty">No confirmed appointments were called before the appointment.</div>
             )}
             {confirmedCallsByAgent.map((agent) => (
-              <article className="agent-confirmed-card" key={agent.callerName}>
+              <article className="agent-confirmed-card" key={agent.id}>
                 <div className="agent-confirmed-header">
                   <h3 title={agent.callerName}>{agent.callerName}</h3>
                   <strong>
