@@ -251,7 +251,7 @@ function HubSpotCallReport() {
     updatedAt: null,
   })
   const [selectedDate, setSelectedDate] = useState(() => getNewYorkDate(-1))
-  const [status, setStatus] = useState('loading')
+  const [status, setStatus] = useState('ready')
   const [error, setError] = useState('')
   const [loadingStartedAt, setLoadingStartedAt] = useState(() => Date.now())
   const [loadingElapsedMs, setLoadingElapsedMs] = useState(0)
@@ -268,30 +268,6 @@ function HubSpotCallReport() {
     setAverageRuntimeMs(nextAverageMs)
     writeAverageRuntimeMs(nextAverageMs)
   }, [])
-
-  useEffect(() => {
-    let isMounted = true
-    const startedAt = Date.now()
-
-    loadHubSpotCallReport(selectedDate)
-      .then((data) => {
-        if (!isMounted) return
-        if (data.cacheSource !== 'session') {
-          recordRuntime(Date.now() - startedAt)
-        }
-        setReport(data)
-        setStatus('ready')
-      })
-      .catch((loadError) => {
-        if (!isMounted) return
-        setError(loadError.message)
-        setStatus('error')
-      })
-
-    return () => {
-      isMounted = false
-    }
-  }, [recordRuntime, selectedDate])
 
   useEffect(() => {
     if (status !== 'loading') return undefined
@@ -311,18 +287,18 @@ function HubSpotCallReport() {
   function updateSelectedDate(nextDate) {
     if (nextDate === selectedDate) return
 
-    const startedAt = Date.now()
-
-    setStatus('loading')
     setError('')
-    setLoadingStartedAt(startedAt)
     setLoadingElapsedMs(0)
     setSelectedDate(nextDate)
   }
 
-  function refreshSelectedDate() {
+  function fetchSelectedReport() {
     const startedAt = Date.now()
+    const nextOverrides = normalizeOutboundAssignmentOverrides(draftOutboundAssignmentOverrides)
 
+    writeOutboundAssignmentOverrides(nextOverrides)
+    setOutboundAssignmentOverrides(nextOverrides)
+    setDraftOutboundAssignmentOverrides(nextOverrides)
     setStatus('loading')
     setError('')
     setLoadingStartedAt(startedAt)
@@ -354,41 +330,6 @@ function HubSpotCallReport() {
 
       return nextOverrides
     })
-  }
-
-  function applyOutboundAssignment(ownerName) {
-    const assignedCallerName = draftOutboundAssignmentOverrides[ownerName] || ownerName
-    const displayName = getDisplayPersonName(assignedCallerName)
-    const nextOverrides = {
-      ...outboundAssignmentOverrides,
-      [ownerName]: displayName,
-    }
-
-    if (displayName === ownerName) {
-      delete nextOverrides[ownerName]
-    }
-
-    writeOutboundAssignmentOverrides(nextOverrides)
-    setOutboundAssignmentOverrides(nextOverrides)
-    setDraftOutboundAssignmentOverrides(nextOverrides)
-
-    const startedAt = Date.now()
-
-    setStatus('loading')
-    setError('')
-    setLoadingStartedAt(startedAt)
-    setLoadingElapsedMs(0)
-
-    loadHubSpotCallReport(selectedDate, { forceRefresh: true })
-      .then((data) => {
-        recordRuntime(Date.now() - startedAt)
-        setReport(data)
-        setStatus('ready')
-      })
-      .catch((loadError) => {
-        setError(loadError.message)
-        setStatus('error')
-      })
   }
 
   const scheduleRows = useMemo(() => {
@@ -644,14 +585,6 @@ function HubSpotCallReport() {
         >
           Today
         </button>
-        <button
-          className="filter-button"
-          disabled={status === 'loading'}
-          type="button"
-          onClick={refreshSelectedDate}
-        >
-          Refresh
-        </button>
       </div>
 
       {status === 'error' && <div className="report-alert">{error}</div>}
@@ -667,9 +600,7 @@ function HubSpotCallReport() {
           </div>
           <div className="outbound-assignment-controls" aria-label="Outbound caller assignments">
             {outboundAssignmentOwners.map((ownerName) => {
-              const appliedCallerName = outboundAssignmentOverrides[ownerName] || ownerName
               const draftCallerName = draftOutboundAssignmentOverrides[ownerName] || ownerName
-              const assignmentChanged = draftCallerName !== appliedCallerName
 
               return (
                 <div className="outbound-assignment-control" key={ownerName}>
@@ -685,19 +616,17 @@ function HubSpotCallReport() {
                       </option>
                     ))}
                   </select>
-                  {assignmentChanged && (
-                    <button
-                      className="outbound-assignment-change"
-                      disabled={status === 'loading'}
-                      type="button"
-                      onClick={() => applyOutboundAssignment(ownerName)}
-                    >
-                      Change
-                    </button>
-                  )}
                 </div>
               )
             })}
+            <button
+              className="outbound-assignment-fetch"
+              disabled={status === 'loading'}
+              type="button"
+              onClick={fetchSelectedReport}
+            >
+              Fetch
+            </button>
           </div>
           <div className="analytics-summary-grid">
             <div className="analytics-total-card appointments">
