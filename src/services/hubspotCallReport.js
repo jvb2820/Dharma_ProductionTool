@@ -10,6 +10,8 @@ const reportTimes = ['2:00 AM', '2:20 AM', '2:30 AM', '2:40 AM', '3:00 AM', '3:2
 const reportTimeZone = 'America/New_York'
 const sessionCachePrefix = 'hubspot-call-report'
 const sessionCacheVersion = 'v5'
+const defaultPollIntervalMs = 8000
+const defaultMaxPollingMs = 15 * 60 * 1000
 
 function getYesterdayDate() {
   const yesterday = new Date()
@@ -183,6 +185,12 @@ function writeCachedReport(date, report) {
   }
 }
 
+function delay(milliseconds) {
+  return new Promise((resolveDelay) => {
+    window.setTimeout(resolveDelay, milliseconds)
+  })
+}
+
 export function getAgentRoster() {
   return agentRoster
 }
@@ -214,51 +222,87 @@ export async function loadHubSpotCallReport(date, options = {}) {
     }
   }
 
-  const requestUrl = new URL(endpoint, window.location.origin)
-  if (date) {
-    requestUrl.searchParams.set('date', date)
-  }
-  if (options.forceRefresh) {
-    requestUrl.searchParams.set('refresh', '1')
-  }
+  const startedAt = Date.now()
+  let shouldForceRefresh = Boolean(options.forceRefresh)
 
-  const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), 360000)
-  let response
+  const buildRequestUrl = () => {
+    const requestUrl = new URL(endpoint, window.location.origin)
 
-  try {
-    response = await fetch(requestUrl, {
-      cache: options.forceRefresh ? 'no-store' : 'default',
-      signal: controller.signal,
-    })
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      throw new Error('HubSpot report took too long to load. Please refresh or try again in a moment.', {
-        cause: error,
-      })
+    if (date) {
+      requestUrl.searchParams.set('date', date)
+    }
+    if (shouldForceRefresh) {
+      requestUrl.searchParams.set('refresh', '1')
     }
 
-    throw error
-  } finally {
-    window.clearTimeout(timeoutId)
+    return requestUrl
   }
 
-  if (!response.ok) {
-    let errorMessage = `HubSpot report request failed: ${response.status}`
+  let payload
+  let isPolling = true
+
+  while (isPolling) {
+    const requestUrl = buildRequestUrl()
+
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), options.requestTimeoutMs ?? 30000)
+    let response
 
     try {
-      const payload = await response.json()
-      if (payload?.message) {
-        errorMessage = `${errorMessage} - ${payload.message}`
+      response = await fetch(requestUrl, {
+        cache: shouldForceRefresh ? 'no-store' : 'default',
+        signal: controller.signal,
+      })
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error('HubSpot report request timed out while checking status. Please try again in a moment.', {
+          cause: error,
+        })
       }
-    } catch {
-      // Keep the status-only message if the server did not return JSON.
+
+      throw error
+    } finally {
+      window.clearTimeout(timeoutId)
     }
 
-    throw new Error(errorMessage)
+    shouldForceRefresh = false
+
+    if (response.status === 202) {
+      payload = await response.json()
+      const elapsedMs = Date.now() - startedAt
+      const maxPollingMs = options.maxPollingMs ?? defaultMaxPollingMs
+
+      if (elapsedMs >= maxPollingMs) {
+        throw new Error('HubSpot report is still building. Please try again in a few minutes.')
+      }
+
+      await delay(payload.retryAfterMs ?? options.pollIntervalMs ?? defaultPollIntervalMs)
+      continue
+    }
+
+    if (!response.ok) {
+      let errorMessage = `HubSpot report request failed: ${response.status}`
+
+      try {
+        const errorPayload = await response.json()
+        if (errorPayload?.message) {
+          errorMessage = `${errorMessage} - ${errorPayload.message}`
+        }
+      } catch {
+        // Keep the status-only message if the server did not return JSON.
+      }
+
+      throw new Error(errorMessage)
+    }
+
+    payload = await response.json()
+    isPolling = false
   }
 
-  const payload = await response.json()
+  if (payload?.status === 'building') {
+    throw new Error('HubSpot report is still building. Please try again in a few minutes.')
+  }
+
   const records = Array.isArray(payload) ? payload : payload.results ?? payload.rows ?? []
   const report = {
     source: 'hubspot',

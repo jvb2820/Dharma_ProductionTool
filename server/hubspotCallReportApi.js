@@ -24,6 +24,7 @@ const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
 const callReportCacheVersion = 'contact-call-v3'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
+const reportErrors = new Map()
 const hubspotMaxAttempts = 6
 const hubspotRequestSpacingMs = 250
 const uspsTrackingCacheTtlMs = 30 * 60 * 1000
@@ -187,6 +188,47 @@ function getApiCacheHeaders(ttlMs) {
   }
 }
 
+function cacheCallReport(cacheKey, report) {
+  const payload = {
+    source: 'hubspot',
+    updatedAt: new Date().toISOString(),
+    reportDate: report.reportDate,
+    rows: report.rows,
+    callerAnalytics: report.callerAnalytics,
+  }
+
+  reportCache.set(cacheKey, {
+    cachedAt: Date.now(),
+    ttlMs: getReportCacheTtlMs(report.reportDate),
+    payload,
+  })
+  reportErrors.delete(cacheKey)
+
+  return payload
+}
+
+function startCallReportBuild(cacheKey, selectedDate) {
+  const existingReportPromise = inFlightReports.get(cacheKey)
+  if (existingReportPromise) return existingReportPromise
+
+  const reportPromise = buildCallReport(selectedDate)
+    .then((report) => cacheCallReport(cacheKey, report))
+    .catch((error) => {
+      reportErrors.set(cacheKey, {
+        message: error.message,
+        failedAt: new Date().toISOString(),
+      })
+      return null
+    })
+    .finally(() => {
+      inFlightReports.delete(cacheKey)
+    })
+
+  inFlightReports.set(cacheKey, reportPromise)
+
+  return reportPromise
+}
+
 function displayDate(value) {
   return new Intl.DateTimeFormat('en-US', {
     timeZone: reportTimeZone,
@@ -219,6 +261,12 @@ function readPhoneFromText(value) {
 
 function normalizeText(value) {
   return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+function readSearchWords(value) {
+  return normalizeText(value)
+    .split(' ')
+    .filter((word) => word.length >= 4)
 }
 
 function normalizeEmail(value) {
@@ -1651,17 +1699,23 @@ function sortCallsByConnectionAndTime(left, right) {
   return new Date(right.callTime) - new Date(left.callTime)
 }
 
+function sortCallsForMatching(calls) {
+  return [...calls].sort(sortCallsByConnectionAndTime)
+}
+
 function getPriorOutboundCalls(meeting, calls, options = {}) {
   const scheduledAt = new Date(meeting.scheduledAt)
   const requireMeetingMatch = options.requireMeetingMatch ?? true
+  const preSorted = options.preSorted ?? false
 
-  return calls
+  const matchingCalls = calls
     .filter((call) => {
       if (!isPriorSameDayOutboundCall(call, scheduledAt)) return false
 
       return requireMeetingMatch ? matchesMeeting(call, meeting) : true
     })
-    .sort(sortCallsByConnectionAndTime)
+
+  return preSorted ? matchingCalls : matchingCalls.sort(sortCallsByConnectionAndTime)
 }
 
 function findPriorOutboundCall(meeting, calls, options = {}) {
@@ -1671,14 +1725,63 @@ function findPriorOutboundCall(meeting, calls, options = {}) {
 function getPreviousDayOutboundCalls(meeting, calls, options = {}) {
   const scheduledAt = new Date(meeting.scheduledAt)
   const requireMeetingMatch = options.requireMeetingMatch ?? true
+  const preSorted = options.preSorted ?? false
 
-  return calls
+  const matchingCalls = calls
     .filter((call) => {
       if (!isPreviousDayOutboundCall(call, scheduledAt)) return false
 
       return requireMeetingMatch ? matchesMeeting(call, meeting) : true
     })
-    .sort(sortCallsByConnectionAndTime)
+
+  return preSorted ? matchingCalls : matchingCalls.sort(sortCallsByConnectionAndTime)
+}
+
+function addCallIndexEntry(index, key, call) {
+  if (!key) return
+
+  const indexedCalls = index.get(key) ?? []
+  indexedCalls.push(call)
+  index.set(key, indexedCalls)
+}
+
+function buildCallCandidateIndexes(calls) {
+  const callsByPhone = new Map()
+  const callsByTitleWord = new Map()
+
+  calls.forEach((call) => {
+    const phoneSuffix = call.phoneNumber ? call.phoneNumber.slice(-10) : ''
+
+    addCallIndexEntry(callsByPhone, phoneSuffix, call)
+    readSearchWords(call.callTitle).forEach((word) => {
+      addCallIndexEntry(callsByTitleWord, word, call)
+    })
+  })
+
+  callsByPhone.forEach((indexedCalls, key) => callsByPhone.set(key, sortCallsForMatching(indexedCalls)))
+  callsByTitleWord.forEach((indexedCalls, key) => callsByTitleWord.set(key, sortCallsForMatching(indexedCalls)))
+
+  return {
+    callsByPhone,
+    callsByTitleWord,
+  }
+}
+
+function getFallbackCandidateCalls(meeting, callIndexes) {
+  const phoneSuffix = normalizePhone(meeting.phoneNumber).slice(-10)
+  if (phoneSuffix) {
+    return callIndexes.callsByPhone.get(phoneSuffix) ?? []
+  }
+
+  const candidateLookup = new Map()
+
+  readSearchWords(meeting.clientName).forEach((word) => {
+    ;(callIndexes.callsByTitleWord.get(word) ?? []).forEach((call) => {
+      candidateLookup.set(call.callId, call)
+    })
+  })
+
+  return sortCallsForMatching(candidateLookup.values())
 }
 
 function buildCallerAnalytics(rows) {
@@ -1710,7 +1813,8 @@ async function buildCallReport(selectedDate) {
     loadScheduledContactsForDate(selectedDate),
     loadOutboundCallsForDate(selectedDate),
   ])
-  const calls = outboundCalls.map((call) => normalizeCall(call, owners))
+  const calls = sortCallsForMatching(outboundCalls.map((call) => normalizeCall(call, owners)))
+  const callIndexes = buildCallCandidateIndexes(calls)
   const contactIdsByCallId = await loadContactIdsByCallId(calls.map((call) => call.callId))
   const contactEmailsById = await loadContactEmailsById(
     [...contactIdsByCallId.values()].flat(),
@@ -1728,6 +1832,9 @@ async function buildCallReport(selectedDate) {
 
     return lookup
   }, new Map())
+  callsByContactEmail.forEach((contactCalls, email) => {
+    callsByContactEmail.set(email, sortCallsForMatching(contactCalls))
+  })
   const appointmentRows = scheduleResult.rows
     .map((meeting) => {
       const properties = meeting.properties ?? {}
@@ -1758,18 +1865,23 @@ async function buildCallReport(selectedDate) {
       const contactCalls = callsByContactEmail.get(normalizeEmail(row.clientEmail)) ?? []
       const contactTimelineCall = findPriorOutboundCall(row, contactCalls, {
         requireMeetingMatch: false,
+        preSorted: true,
       })
-      const fallbackCall = contactTimelineCall ? null : findPriorOutboundCall(row, calls)
+      const fallbackCandidateCalls = contactTimelineCall ? [] : getFallbackCandidateCalls(row, callIndexes)
+      const fallbackCall = contactTimelineCall
+        ? null
+        : findPriorOutboundCall(row, fallbackCandidateCalls, { preSorted: true })
       const matchingCall = contactTimelineCall ?? fallbackCall
       const qualifyingCalls = contactTimelineCall
-        ? getPriorOutboundCalls(row, contactCalls, { requireMeetingMatch: false })
-        : getPriorOutboundCalls(row, calls)
+        ? getPriorOutboundCalls(row, contactCalls, { requireMeetingMatch: false, preSorted: true })
+        : getPriorOutboundCalls(row, fallbackCandidateCalls, { preSorted: true })
       const previousDayContactCalls = getPreviousDayOutboundCalls(row, contactCalls, {
         requireMeetingMatch: false,
+        preSorted: true,
       })
       const previousDayFallbackCalls = previousDayContactCalls.length > 0
         ? []
-        : getPreviousDayOutboundCalls(row, calls)
+        : getPreviousDayOutboundCalls(row, getFallbackCandidateCalls(row, callIndexes), { preSorted: true })
       const previousDayCalls = previousDayContactCalls.length > 0
         ? previousDayContactCalls
         : previousDayFallbackCalls
@@ -1829,6 +1941,10 @@ const server = createServer(async (request, response) => {
     const cacheKey = `${callReportCacheVersion}:${selectedDate || 'default'}`
     const cachedReport = reportCache.get(cacheKey)
 
+    if (forceRefresh) {
+      reportErrors.delete(cacheKey)
+    }
+
     if (!forceRefresh && cachedReport && Date.now() - cachedReport.cachedAt < (cachedReport.ttlMs ?? currentDateCacheTtlMs)) {
       sendJson(request, response, 200, {
         ...cachedReport.payload,
@@ -1837,40 +1953,32 @@ const server = createServer(async (request, response) => {
       return
     }
 
-    let reportPromise = inFlightReports.get(cacheKey)
+    const reportError = reportErrors.get(cacheKey)
 
-    if (!reportPromise) {
-      reportPromise = buildCallReport(selectedDate)
-      inFlightReports.set(cacheKey, reportPromise)
-    }
-
-    try {
-      const report = await reportPromise
-      const payload = {
-        source: 'hubspot',
-        updatedAt: new Date().toISOString(),
-        reportDate: report.reportDate,
-        rows: report.rows,
-        callerAnalytics: report.callerAnalytics,
-      }
-
-      reportCache.set(cacheKey, {
-        cachedAt: Date.now(),
-        ttlMs: getReportCacheTtlMs(report.reportDate),
-        payload,
-      })
-      sendJson(request, response, 200, payload, forceRefresh
-        ? { 'Cache-Control': 'no-store' }
-        : getApiCacheHeaders(getReportCacheTtlMs(report.reportDate)))
-    } catch (error) {
+    if (!forceRefresh && reportError && !inFlightReports.has(cacheKey)) {
       sendJson(request, response, 500, {
-        message: error.message,
+        message: reportError.message,
+        failedAt: reportError.failedAt,
       }, {
         'Cache-Control': 'no-store',
       })
-    } finally {
-      inFlightReports.delete(cacheKey)
+      return
     }
+
+    startCallReportBuild(cacheKey, selectedDate)
+    sendJson(request, response, 202, {
+      source: 'hubspot',
+      status: 'building',
+      message: 'HubSpot report is still building. Try again shortly.',
+      reportDate: selectedDate ?? null,
+      retryAfterMs: 8000,
+      rows: [],
+      callerAnalytics: [],
+      updatedAt: new Date().toISOString(),
+    }, {
+      'Cache-Control': 'no-store',
+      'Retry-After': '8',
+    })
     return
   }
 
