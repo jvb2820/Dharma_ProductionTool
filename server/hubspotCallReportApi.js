@@ -939,7 +939,6 @@ function normalizeUspsDashboardStatus(summary, event) {
   if (text.includes('delivered')) return 'Delivered'
   if (
     text.includes('failed')
-    || text.includes('delivery attempt')
     || text.includes('notice left')
     || text.includes('undeliverable')
     || text.includes('return to sender')
@@ -963,6 +962,7 @@ function normalizeUspsDashboardStatus(summary, event) {
     || text.includes('pre shipment')
     || text.includes('shipping partner')
     || text.includes('awaiting item')
+    || text.includes('delivery attempt')
   ) {
     return 'In progress'
   }
@@ -1170,7 +1170,6 @@ function mapShopifyShipmentStatus(value) {
   if (shipmentStatus === 'delivered') return 'Delivered'
   if (
     shipmentStatus === 'failure'
-    || shipmentStatus === 'attempted_delivery'
   ) {
     return 'Failed delivery'
   }
@@ -1185,6 +1184,7 @@ function mapShopifyShipmentStatus(value) {
     || shipmentStatus === 'label_printed'
     || shipmentStatus === 'label_purchased'
     || shipmentStatus === 'ready_for_pickup'
+    || shipmentStatus === 'attempted_delivery'
   ) {
     return 'In progress'
   }
