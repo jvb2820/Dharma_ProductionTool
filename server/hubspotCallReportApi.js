@@ -29,6 +29,7 @@ const hubspotRequestSpacingMs = 250
 const uspsTrackingCacheTtlMs = 30 * 60 * 1000
 const shopifyAccessTokenRefreshBufferMs = 5 * 60 * 1000
 let lastHubspotRequestAt = 0
+let hubspotRequestQueue = Promise.resolve()
 let shopifyAccessTokenCache = null
 let shopifyAccessTokenRequest = null
 
@@ -78,7 +79,7 @@ function isAllowedOrigin(origin) {
   })
 }
 
-function sendJson(request, response, statusCode, payload) {
+function sendJson(request, response, statusCode, payload, headers = {}) {
   const origin = request.headers.origin
   const allowedOrigin = isAllowedOrigin(origin) ? origin : allowedOrigins[0] ?? defaultAllowedOrigins[0]
 
@@ -88,6 +89,7 @@ function sendJson(request, response, statusCode, payload) {
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Methods': 'GET,OPTIONS',
     'Content-Type': 'application/json',
+    ...headers,
   })
   response.end(JSON.stringify(payload))
 }
@@ -175,6 +177,14 @@ function getReportDateRange(selectedDate) {
 
 function getReportCacheTtlMs(reportDate) {
   return reportDate === getZonedDate(new Date()) ? currentDateCacheTtlMs : pastDateCacheTtlMs
+}
+
+function getApiCacheHeaders(ttlMs) {
+  const maxAgeSeconds = Math.max(0, Math.floor(ttlMs / 1000))
+
+  return {
+    'Cache-Control': `private, max-age=${maxAgeSeconds}, stale-while-revalidate=300`,
+  }
 }
 
 function displayDate(value) {
@@ -449,14 +459,27 @@ async function hubspotFetch(path, options = {}) {
 }
 
 async function waitForHubspotSlot() {
-  const elapsedMs = Date.now() - lastHubspotRequestAt
-  const waitMs = Math.max(0, hubspotRequestSpacingMs - elapsedMs)
+  const previousRequest = hubspotRequestQueue
+  let releaseSlot
 
-  if (waitMs > 0) {
-    await delay(waitMs)
+  hubspotRequestQueue = new Promise((resolveSlot) => {
+    releaseSlot = resolveSlot
+  })
+
+  await previousRequest
+
+  try {
+    const elapsedMs = Date.now() - lastHubspotRequestAt
+    const waitMs = Math.max(0, hubspotRequestSpacingMs - elapsedMs)
+
+    if (waitMs > 0) {
+      await delay(waitMs)
+    }
+
+    lastHubspotRequestAt = Date.now()
+  } finally {
+    releaseSlot()
   }
-
-  lastHubspotRequestAt = Date.now()
 }
 
 function delay(milliseconds) {
@@ -1513,14 +1536,16 @@ async function loadContactIdsByCallId(callIds) {
   const normalizedCallIds = [...new Set(callIds.map((callId) => String(callId ?? '').trim()).filter(Boolean))]
   const contactIdsByCallId = new Map()
 
-  for (const callIdChunk of chunkArray(normalizedCallIds, 100)) {
-    const payload = await hubspotFetch('/crm/v4/associations/calls/contacts/batch/read', {
+  const payloads = await Promise.all(chunkArray(normalizedCallIds, 100).map((callIdChunk) =>
+    hubspotFetch('/crm/v4/associations/calls/contacts/batch/read', {
       method: 'POST',
       body: {
         inputs: callIdChunk.map((id) => ({ id })),
       },
-    })
+    }),
+  ))
 
+  payloads.forEach((payload) => {
     ;(payload.results ?? []).forEach((result) => {
       const callId = String(result.from?.id ?? '')
       const contactIds = (result.to ?? [])
@@ -1529,7 +1554,7 @@ async function loadContactIdsByCallId(callIds) {
 
       contactIdsByCallId.set(callId, contactIds)
     })
-  }
+  })
 
   return contactIdsByCallId
 }
@@ -1538,22 +1563,24 @@ async function loadContactEmailsById(contactIds) {
   const normalizedContactIds = [...new Set(contactIds.map((contactId) => String(contactId ?? '').trim()).filter(Boolean))]
   const contactEmailsById = new Map()
 
-  for (const contactIdChunk of chunkArray(normalizedContactIds, 100)) {
-    const payload = await hubspotFetch('/crm/v3/objects/contacts/batch/read', {
+  const payloads = await Promise.all(chunkArray(normalizedContactIds, 100).map((contactIdChunk) =>
+    hubspotFetch('/crm/v3/objects/contacts/batch/read', {
       method: 'POST',
       body: {
         properties: ['email'],
         inputs: contactIdChunk.map((id) => ({ id })),
       },
-    })
+    }),
+  ))
 
+  payloads.forEach((payload) => {
     ;(payload.results ?? []).forEach((contact) => {
       const email = normalizeEmail(contact.properties?.email)
       if (email) {
         contactEmailsById.set(String(contact.id), email)
       }
     })
-  }
+  })
 
   return contactEmailsById
 }
@@ -1790,6 +1817,8 @@ const server = createServer(async (request, response) => {
     sendJson(request, response, 200, {
       status: 'ok',
       service: 'hubspot-call-report-api',
+    }, {
+      'Cache-Control': 'no-store',
     })
     return
   }
@@ -1801,7 +1830,10 @@ const server = createServer(async (request, response) => {
     const cachedReport = reportCache.get(cacheKey)
 
     if (!forceRefresh && cachedReport && Date.now() - cachedReport.cachedAt < (cachedReport.ttlMs ?? currentDateCacheTtlMs)) {
-      sendJson(request, response, 200, cachedReport.payload)
+      sendJson(request, response, 200, {
+        ...cachedReport.payload,
+        cacheSource: 'server-memory',
+      }, getApiCacheHeaders(cachedReport.ttlMs ?? currentDateCacheTtlMs))
       return
     }
 
@@ -1827,10 +1859,14 @@ const server = createServer(async (request, response) => {
         ttlMs: getReportCacheTtlMs(report.reportDate),
         payload,
       })
-      sendJson(request, response, 200, payload)
+      sendJson(request, response, 200, payload, forceRefresh
+        ? { 'Cache-Control': 'no-store' }
+        : getApiCacheHeaders(getReportCacheTtlMs(report.reportDate)))
     } catch (error) {
       sendJson(request, response, 500, {
         message: error.message,
+      }, {
+        'Cache-Control': 'no-store',
       })
     } finally {
       inFlightReports.delete(cacheKey)
@@ -1849,7 +1885,10 @@ const server = createServer(async (request, response) => {
     }
 
     if (!forceRefresh && cachedReport && Date.now() - cachedReport.cachedAt < currentDateCacheTtlMs) {
-      sendJson(request, response, 200, cachedReport.payload)
+      sendJson(request, response, 200, {
+        ...cachedReport.payload,
+        cacheSource: 'server-memory',
+      }, getApiCacheHeaders(currentDateCacheTtlMs))
       return
     }
 
@@ -1867,10 +1906,14 @@ const server = createServer(async (request, response) => {
         cachedAt: Date.now(),
         payload,
       })
-      sendJson(request, response, 200, payload)
+      sendJson(request, response, 200, payload, forceRefresh
+        ? { 'Cache-Control': 'no-store' }
+        : getApiCacheHeaders(currentDateCacheTtlMs))
     } catch (error) {
       sendJson(request, response, 500, {
         message: error.message,
+      }, {
+        'Cache-Control': 'no-store',
       })
     } finally {
       inFlightTrackingReports.delete(cacheKey)
@@ -1880,6 +1923,8 @@ const server = createServer(async (request, response) => {
 
   sendJson(request, response, 404, {
     message: 'Not found',
+  }, {
+    'Cache-Control': 'no-store',
   })
 })
 

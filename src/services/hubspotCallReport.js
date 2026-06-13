@@ -227,7 +227,10 @@ export async function loadHubSpotCallReport(date, options = {}) {
   let response
 
   try {
-    response = await fetch(requestUrl, { signal: controller.signal })
+    response = await fetch(requestUrl, {
+      cache: options.forceRefresh ? 'no-store' : 'default',
+      signal: controller.signal,
+    })
   } catch (error) {
     if (error.name === 'AbortError') {
       throw new Error('HubSpot report took too long to load. Please refresh or try again in a moment.', {
@@ -263,7 +266,7 @@ export async function loadHubSpotCallReport(date, options = {}) {
     callerAnalytics: payload.callerAnalytics ?? [],
     reportDate: payload.reportDate ?? getYesterdayDate(),
     updatedAt: payload.updatedAt ?? new Date().toISOString(),
-    cacheSource: 'network',
+    cacheSource: payload.cacheSource ?? 'network',
   }
 
   writeCachedReport(date, report)

@@ -297,7 +297,7 @@ function HubSpotCallReport() {
     setSelectedDate(nextDate)
   }
 
-  function fetchSelectedReport() {
+  function fetchSelectedReport(options = {}) {
     const startedAt = Date.now()
     const nextOverrides = normalizeOutboundAssignmentOverrides(draftOutboundAssignmentOverrides)
 
@@ -309,7 +309,7 @@ function HubSpotCallReport() {
     setLoadingStartedAt(startedAt)
     setLoadingElapsedMs(0)
 
-    loadHubSpotCallReport(selectedDate, { forceRefresh: true })
+    loadHubSpotCallReport(selectedDate, options)
       .then((data) => {
         recordRuntime(Date.now() - startedAt)
         setReport(data)
@@ -682,9 +682,17 @@ function HubSpotCallReport() {
               className="outbound-assignment-fetch"
               disabled={status === 'loading'}
               type="button"
-              onClick={fetchSelectedReport}
+              onClick={() => fetchSelectedReport()}
             >
               Fetch
+            </button>
+            <button
+              className="filter-button"
+              disabled={status === 'loading'}
+              type="button"
+              onClick={() => fetchSelectedReport({ forceRefresh: true })}
+            >
+              Refresh Live
             </button>
           </div>
           <div className="analytics-summary-grid">

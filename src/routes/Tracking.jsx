@@ -146,7 +146,7 @@ function Tracking() {
 
     loadTracking({ showLoading: true })
     refreshInterval = window.setInterval(() => {
-      loadTracking({ forceRefresh: true })
+      loadTracking()
     }, trackingAutoRefreshMs)
 
     return () => {
@@ -163,6 +163,19 @@ function Tracking() {
       .then((data) => {
         setReport(data)
         setStatus('ready')
+      })
+      .catch((loadError) => {
+        setError(loadError.message)
+        setStatus('error')
+      })
+  }
+
+  function refreshTrackingFromCache() {
+    loadShopifyTracking()
+      .then((data) => {
+        setReport(data)
+        setStatus('ready')
+        setError('')
       })
       .catch((loadError) => {
         setError(loadError.message)
@@ -236,9 +249,17 @@ function Tracking() {
           className="filter-button"
           disabled={status === 'loading'}
           type="button"
-          onClick={refreshTracking}
+          onClick={refreshTrackingFromCache}
         >
           Refresh
+        </button>
+        <button
+          className="filter-button"
+          disabled={status === 'loading'}
+          type="button"
+          onClick={refreshTracking}
+        >
+          Refresh Live
         </button>
       </div>
 
