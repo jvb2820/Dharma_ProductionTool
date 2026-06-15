@@ -2,7 +2,7 @@ services:
   - type: web
     name: production-tool-hubspot-api
     runtime: node
-    buildCommand: npm ci
+    buildCommand: npx npm@10.9.2 ci
     startCommand: npm run api
     healthCheckPath: /health
     envVars:
