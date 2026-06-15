@@ -160,6 +160,36 @@
   outline-offset: 3px;
 }
 
+.upload-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 14px 4px 0;
+}
+
+.verify-button {
+  min-height: 38px;
+  padding: 0 18px;
+  border: 1px solid rgba(0, 86, 63, 0.22);
+  border-radius: 8px;
+  color: #fff;
+  background: var(--green);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.verify-button:hover:not(:disabled),
+.verify-button:focus-visible {
+  background: #003f2f;
+}
+
+.verify-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 .upload-message {
   margin: 12px 4px 0;
   color: var(--muted);
@@ -409,6 +439,163 @@
 }
 
 .tracking-status.blank {
+  border-color: #c3c8c2;
+  color: #3f4f45;
+  background: #edf0eb;
+}
+
+.home-toolbar {
+  margin-bottom: 16px;
+}
+
+.home-workspace {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.78fr) minmax(0, 1.6fr);
+  gap: 16px;
+  width: min(100%, 1720px);
+  margin: 0 auto 18px;
+}
+
+.home-upload-panel {
+  width: 100%;
+  margin: 0;
+  border-radius: 8px;
+  border-color: rgba(196, 167, 74, 0.34);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.home-upload-panel .file-upload {
+  min-height: 138px;
+  align-items: flex-start;
+  border-radius: 7px;
+  background:
+    linear-gradient(135deg, rgba(255, 224, 220, 0.75), rgba(255, 248, 227, 0.9) 48%, rgba(232, 247, 223, 0.9)),
+    #fffef9;
+}
+
+.home-upload-panel .upload-icon {
+  border-radius: 8px;
+}
+
+.home-analytics {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(280px, 1.3fr) minmax(220px, 0.9fr);
+  gap: 16px;
+}
+
+.home-total-card,
+.home-verification-card {
+  display: grid;
+  align-content: space-between;
+  min-height: 184px;
+  padding: 20px;
+  border: 1px solid rgba(0, 86, 63, 0.14);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 252, 0.94)),
+    repeating-linear-gradient(90deg, rgba(0, 86, 63, 0.05) 0 1px, transparent 1px 46px);
+  box-shadow: 0 18px 44px rgba(47, 73, 57, 0.1);
+}
+
+.home-total-card {
+  border-top: 4px solid var(--gold);
+}
+
+.home-verification-card {
+  border-top: 4px solid #4fb06d;
+}
+
+.home-total-card span,
+.home-total-card small,
+.home-verification-card span,
+.home-verification-card small {
+  color: #516f5f;
+  font-size: 0.74rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.home-total-card strong,
+.home-verification-card strong {
+  color: #1f3428;
+  font-size: clamp(1.9rem, 3vw, 3rem);
+  line-height: 1;
+}
+
+.home-chart-card {
+  min-height: 184px;
+}
+
+.home-table-panel {
+  width: min(100%, 1720px);
+}
+
+.home-table {
+  min-width: 1280px;
+}
+
+.home-table th:nth-child(1),
+.home-table td:nth-child(1) {
+  width: 9%;
+  text-align: center;
+}
+
+.home-table th:nth-child(2),
+.home-table td:nth-child(2) {
+  width: 11%;
+  text-align: center;
+}
+
+.home-table th:nth-child(3),
+.home-table td:nth-child(3),
+.home-table th:nth-child(4),
+.home-table td:nth-child(4),
+.home-table th:nth-child(6),
+.home-table td:nth-child(6),
+.home-table th:nth-child(7),
+.home-table td:nth-child(7) {
+  width: 12%;
+}
+
+.home-table th:nth-child(5),
+.home-table td:nth-child(5) {
+  width: 23%;
+}
+
+.home-table th:nth-child(8),
+.home-table td:nth-child(8) {
+  width: 9%;
+  text-align: center;
+}
+
+.verification-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 78px;
+  min-height: 26px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 950;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.verification-status.verified {
+  border-color: #8ac184;
+  color: #0f4f26;
+  background: #dff5d8;
+}
+
+.verification-status.missing {
+  border-color: #db8d83;
+  color: #8c1f16;
+  background: #ffe1dc;
+}
+
+.verification-status.pending {
   border-color: #c3c8c2;
   color: #3f4f45;
   background: #edf0eb;
@@ -1901,8 +2088,16 @@
   }
 
   .tracking-analytics,
+  .home-workspace,
+  .home-analytics,
   .tracking-analytics-grid {
     grid-template-columns: 1fr;
+  }
+
+  .home-total-card,
+  .home-verification-card,
+  .home-chart-card {
+    min-height: 150px;
   }
 
   .tracking-analytics-hero {

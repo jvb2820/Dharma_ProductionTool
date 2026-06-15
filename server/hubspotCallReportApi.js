@@ -7,6 +7,7 @@ loadLocalEnv()
 const port = Number(process.env.PORT ?? 3001)
 const host = process.env.HOST ?? '0.0.0.0'
 const hubspotBaseUrl = 'https://api.hubapi.com'
+const stripeBaseUrl = 'https://api.stripe.com'
 const shopifyApiVersion = process.env.SHOPIFY_API_VERSION ?? '2026-01'
 const defaultShopifyStatusSheetCsvUrl = 'https://docs.google.com/spreadsheets/d/1uBJLgzyYtBnPxR9x-DuHRcJz1DTJm3YSK7halebtWLg/gviz/tq?tqx=out:csv&gid=608356906'
 const supabaseTrackingTable = process.env.SUPABASE_TRACKING_TABLE ?? 'tracking_dashboard'
@@ -18,6 +19,7 @@ const reportTimeZone = process.env.HUBSPOT_REPORT_TIMEZONE ?? 'America/New_York'
 const reportCache = new Map()
 const trackingCache = new Map()
 const uspsTrackingCache = new Map()
+const stripeVerificationCache = new Map()
 let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
@@ -28,6 +30,7 @@ const reportErrors = new Map()
 const hubspotMaxAttempts = 6
 const hubspotRequestSpacingMs = 250
 const uspsTrackingCacheTtlMs = 30 * 60 * 1000
+const stripeVerificationCacheTtlMs = 5 * 60 * 1000
 const shopifyAccessTokenRefreshBufferMs = 5 * 60 * 1000
 let lastHubspotRequestAt = 0
 let hubspotRequestQueue = Promise.resolve()
@@ -88,11 +91,41 @@ function sendJson(request, response, statusCode, payload, headers = {}) {
     'Access-Control-Allow-Origin': allowedOrigin,
     'Vary': 'Origin',
     'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     'Content-Type': 'application/json',
     ...headers,
   })
   response.end(JSON.stringify(payload))
+}
+
+function readJsonRequest(request, maxBytes = 1024 * 1024) {
+  return new Promise((resolveRequest, rejectRequest) => {
+    let body = ''
+
+    request.on('data', (chunk) => {
+      body += chunk
+
+      if (body.length > maxBytes) {
+        request.destroy()
+        rejectRequest(new Error('Request body is too large'))
+      }
+    })
+
+    request.on('end', () => {
+      if (!body) {
+        resolveRequest({})
+        return
+      }
+
+      try {
+        resolveRequest(JSON.parse(body))
+      } catch (error) {
+        rejectRequest(new Error('Request body must be valid JSON', { cause: error }))
+      }
+    })
+
+    request.on('error', rejectRequest)
+  })
 }
 
 function getZonedDate(date) {
@@ -1807,6 +1840,189 @@ function buildCallerAnalytics(rows) {
   return [...callerRows.values()].sort((left, right) => right.called - left.called)
 }
 
+function parseMoneyToCents(value) {
+  if (value === null || value === undefined || value === '') return null
+
+  const cleanedValue = String(value)
+    .replace(/,/g, '')
+    .replace(/[^\d.-]/g, '')
+    .trim()
+
+  if (!cleanedValue) return null
+
+  const amount = Number(cleanedValue)
+
+  if (!Number.isFinite(amount)) return null
+
+  return Math.round(Math.abs(amount) * 100)
+}
+
+function parsePaymentDateRange(value) {
+  const rawValue = String(value ?? '').trim()
+  if (!rawValue) return null
+
+  const isoMatch = rawValue.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  const slashMatch = rawValue.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/)
+  let year
+  let month
+  let day
+
+  if (isoMatch) {
+    year = Number(isoMatch[1])
+    month = Number(isoMatch[2])
+    day = Number(isoMatch[3])
+  } else if (slashMatch) {
+    month = Number(slashMatch[1])
+    day = Number(slashMatch[2])
+    year = Number(slashMatch[3])
+    if (year < 100) year += 2000
+  } else {
+    const parsedDate = new Date(rawValue)
+    if (Number.isNaN(parsedDate.getTime())) return null
+
+    year = parsedDate.getFullYear()
+    month = parsedDate.getMonth() + 1
+    day = parsedDate.getDate()
+  }
+
+  const start = Date.UTC(year, month - 1, day, 0, 0, 0)
+  const end = Date.UTC(year, month - 1, day + 1, 0, 0, 0)
+
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+
+  return {
+    gte: Math.floor(start / 1000),
+    lt: Math.floor(end / 1000),
+  }
+}
+
+function getStripeApiKeys() {
+  return [
+    process.env.STRIPE_SECRET_KEY,
+    process.env.STRIPE_API_KEY,
+  ]
+    .map((key) => String(key ?? '').trim())
+    .filter(Boolean)
+    .filter((key, index, keys) => keys.indexOf(key) === index)
+}
+
+async function stripeGet(path, params = {}) {
+  const apiKeys = getStripeApiKeys()
+
+  if (!apiKeys.length) {
+    throw new Error('Missing STRIPE_SECRET_KEY')
+  }
+
+  const requestUrl = new URL(`${stripeBaseUrl}${path}`)
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      requestUrl.searchParams.set(key, String(value))
+    }
+  })
+
+  let lastStatus = null
+  let lastMessage = ''
+
+  for (const apiKey of apiKeys) {
+    const response = await fetch(requestUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    })
+
+    if (response.ok) {
+      return response.json()
+    }
+
+    lastStatus = response.status
+
+    try {
+      const payload = await response.json()
+      lastMessage = payload?.error?.message ?? ''
+    } catch {
+      lastMessage = ''
+    }
+
+    if (response.status !== 401) {
+      throw new Error(`Stripe request failed (${response.status})${lastMessage ? `: ${lastMessage}` : ''}`)
+    }
+  }
+
+  throw new Error(
+    `Stripe rejected the configured API key${apiKeys.length === 1 ? '' : 's'} (${lastStatus ?? 401})${lastMessage ? `: ${lastMessage}` : ''}. Stripe server keys usually start with sk_ or rk_.`,
+  )
+}
+
+async function listStripeChargesForRow(row, amountCents) {
+  const dateRange = parsePaymentDateRange(row.Date)
+  const charges = []
+  let startingAfter = ''
+
+  do {
+    const payload = await stripeGet('/v1/charges', {
+      limit: 100,
+      'created[gte]': dateRange?.gte,
+      'created[lt]': dateRange?.lt,
+      starting_after: startingAfter,
+    })
+
+    const pageCharges = payload.data ?? []
+    charges.push(...pageCharges)
+    startingAfter = payload.has_more && pageCharges.length ? pageCharges.at(-1).id : ''
+  } while (startingAfter && charges.length < 500)
+
+  return charges.filter((charge) => charge.amount === amountCents)
+}
+
+function chargeMatchesUploadedRow(charge) {
+  return charge.paid === true || charge.status === 'succeeded'
+}
+
+async function verifyStripePaymentRow(row) {
+  const amountCents = parseMoneyToCents(row['Total Collected'])
+
+  if (!amountCents) {
+    return {
+      verification: 'No',
+      matchedChargeId: '',
+    }
+  }
+
+  const cacheKey = `${row.Date ?? ''}:${amountCents}`
+  const cachedVerification = stripeVerificationCache.get(cacheKey)
+
+  if (cachedVerification && Date.now() - cachedVerification.cachedAt < stripeVerificationCacheTtlMs) {
+    return cachedVerification.result
+  }
+
+  const charges = await listStripeChargesForRow(row, amountCents)
+  const matchedCharge = charges.find(chargeMatchesUploadedRow)
+  const result = {
+    verification: matchedCharge ? 'Yes' : 'No',
+    matchedChargeId: matchedCharge?.id ?? '',
+  }
+
+  stripeVerificationCache.set(cacheKey, {
+    cachedAt: Date.now(),
+    result,
+  })
+
+  return result
+}
+
+async function verifyStripePaymentRows(rows) {
+  const results = []
+
+  for (const row of rows) {
+    const result = await verifyStripePaymentRow(row)
+    results.push(result)
+  }
+
+  return results
+}
+
 async function buildCallReport(selectedDate) {
   const [owners, scheduleResult, outboundCalls] = await Promise.all([
     loadOwners(),
@@ -1932,6 +2148,39 @@ const server = createServer(async (request, response) => {
     }, {
       'Cache-Control': 'no-store',
     })
+    return
+  }
+
+  if (requestUrl.pathname === '/api/stripe/verify-payments' && request.method === 'POST') {
+    try {
+      const payload = await readJsonRequest(request)
+      const rows = Array.isArray(payload.rows) ? payload.rows.slice(0, 500) : []
+
+      if (!rows.length) {
+        sendJson(request, response, 400, {
+          message: 'Expected a rows array to verify.',
+        }, {
+          'Cache-Control': 'no-store',
+        })
+        return
+      }
+
+      const results = await verifyStripePaymentRows(rows)
+
+      sendJson(request, response, 200, {
+        source: 'stripe',
+        rows: results,
+        updatedAt: new Date().toISOString(),
+      }, {
+        'Cache-Control': 'no-store',
+      })
+    } catch (error) {
+      sendJson(request, response, 500, {
+        message: error.message,
+      }, {
+        'Cache-Control': 'no-store',
+      })
+    }
     return
   }
 
