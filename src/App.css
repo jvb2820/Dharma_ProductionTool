@@ -160,6 +160,13 @@
   outline-offset: 3px;
 }
 
+.upload-message {
+  margin: 12px 4px 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
 .table-panel {
   width: min(100%, 1280px);
   margin: 0 auto;
