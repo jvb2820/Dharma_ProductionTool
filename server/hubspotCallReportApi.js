@@ -25,7 +25,7 @@ const stripeVerificationCache = new Map()
 let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
-const callReportCacheVersion = 'contact-call-v3'
+const callReportCacheVersion = 'contact-call-v4'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
 const reportErrors = new Map()
@@ -1889,6 +1889,19 @@ function findPriorOutboundCall(meeting, calls, options = {}) {
   return getPriorOutboundCalls(meeting, calls, options)[0]
 }
 
+function isCreatedWithinOneHourOfAppointment(createdAt, scheduledAt) {
+  if (!createdAt || !scheduledAt) return false
+
+  const createdTime = new Date(createdAt)
+  const scheduledTime = new Date(scheduledAt)
+
+  if (Number.isNaN(createdTime.getTime()) || Number.isNaN(scheduledTime.getTime())) return false
+
+  const millisecondsUntilAppointment = scheduledTime.getTime() - createdTime.getTime()
+
+  return millisecondsUntilAppointment >= 0 && millisecondsUntilAppointment <= 60 * 60 * 1000
+}
+
 function getPreviousDayOutboundCalls(meeting, calls, options = {}) {
   const scheduledAt = new Date(meeting.scheduledAt)
   const requireMeetingMatch = options.requireMeetingMatch ?? true
@@ -2301,6 +2314,7 @@ async function buildCallReport(selectedDate) {
         : previousDayFallbackCalls
       const previousDayCall = previousDayCalls[0]
       const appointmentCancelled = isCancelledMeeting(row.meetingName)
+      const outboundExempt = !matchingCall && isCreatedWithinOneHourOfAppointment(row.createdAt, row.scheduledAt)
 
       return {
         ...row,
@@ -2311,10 +2325,13 @@ async function buildCallReport(selectedDate) {
         previousDayCalledDetail: previousDayCall
           ? `${previousDayContactCalls.length > 0 ? 'Previous day contact timeline' : 'Previous day matched'} ${previousDayCall.disposition || 'outbound call'} at ${displayTime(previousDayCall.callTime)}`
           : 'No previous-day outbound call found',
-        called: matchingCall ? 'Called' : 'Not Called',
+        called: matchingCall ? 'Called' : outboundExempt ? 'Not Required' : 'Not Called',
         calledDetail: matchingCall
           ? `${contactTimelineCall ? 'Contact timeline' : 'Matched'} ${matchingCall.disposition || 'outbound call'} at ${displayTime(matchingCall.callTime)}`
-          : 'No same-day outbound call found before the appointment',
+          : outboundExempt
+            ? 'Outbound call not required: meeting was created within 1 hour of the appointment'
+            : 'No same-day outbound call found before the appointment',
+        outboundExempt,
         confirmation: appointmentCancelled ? 'Not Confirmed' : 'Confirmed',
         confirmationDetail: appointmentCancelled
           ? 'Meeting name indicates the appointment was cancelled'

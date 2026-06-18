@@ -341,6 +341,7 @@ function HubSpotCallReport() {
     return report.rows.map((row) => {
       const meetingName = row.meetingName
       const callerName = row.callerName
+      const outboundExempt = Boolean(row.outboundExempt)
       const cancelled = isCancelledMeeting(meetingName)
 
       return {
@@ -354,16 +355,20 @@ function HubSpotCallReport() {
         phoneNumber: row.phoneNumber,
         scheduledAgent: row.scheduledAgent,
         meetingHost: row.meetingHost,
+        createdAt: row.createdAt,
         scheduledAt: row.scheduledAt,
+        outboundExempt,
         callerName,
         qualifyingCallers: row.qualifyingCallers ?? (callerName ? [callerName] : []),
         previousDayCallerName: row.previousDayCallerName ?? '',
         previousDayCallers: row.previousDayCallers ?? [],
         previousDayCalledDetail: row.previousDayCalledDetail ?? '',
-        called: callerName ? 'Called' : 'Not Called',
+        called: callerName ? 'Called' : outboundExempt ? 'Not Required' : 'Not Called',
         calledDetail: callerName
           ? row.calledDetail || 'Outbound caller found before the appointment'
-          : row.calledDetail || 'No qualifying outbound call found',
+          : outboundExempt
+            ? row.calledDetail || 'Outbound call not required: meeting was created within 1 hour of the appointment'
+            : row.calledDetail || 'No qualifying outbound call found',
         confirmation: cancelled ? 'Not Confirmed' : 'Confirmed',
         confirmationDetail: cancelled
           ? 'Meeting name indicates the appointment was cancelled'
@@ -433,7 +438,7 @@ function HubSpotCallReport() {
 
       caller.totalAppointments += 1
       meetingHost.totalAppointments += 1
-      if (row.confirmation === 'Confirmed' && !assignedCallerCalled) {
+      if (row.confirmation === 'Confirmed' && !assignedCallerCalled && !row.outboundExempt) {
         caller.notCalled += 1
         meetingHost.notCalled += 1
         caller.notCalledRows.push(row)
@@ -495,7 +500,7 @@ function HubSpotCallReport() {
       agentRows.totalAppointments += 1
       meetingHost.totalAppointments += 1
 
-      if (row.confirmation === 'Confirmed' && !previousDayCalledByAssignedCaller) {
+      if (row.confirmation === 'Confirmed' && !previousDayCalledByAssignedCaller && !row.outboundExempt) {
         agentRows.notCalled += 1
         meetingHost.notCalled += 1
         agentRows.notCalledRows.push(row)
@@ -961,7 +966,7 @@ function HubSpotCallReport() {
                   </td>
                   <td>
                     <span
-                      className={`readable-status ${slot.called === 'Called' ? 'confirmed' : 'missing'}`}
+                      className={`readable-status ${slot.called === 'Called' ? 'confirmed' : slot.outboundExempt ? 'info' : 'missing'}`}
                       title={slot.calledDetail || ''}
                     >
                       {slot.called || 'Not Called'}
