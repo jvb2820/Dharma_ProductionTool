@@ -254,11 +254,17 @@ function HomeDashboard() {
         return
       }
 
-      const historyRows = await savePaymentHistory(nextRecords)
-      setHistoryRecords(historyRows)
-      setUploadMessage(
-        `Loaded and saved ${nextRecords.length} row${nextRecords.length === 1 ? '' : 's'} from ${file.name}.`,
-      )
+      try {
+        const historyRows = await savePaymentHistory(nextRecords)
+        setHistoryRecords(historyRows)
+        setUploadMessage(
+          `Loaded and saved ${nextRecords.length} row${nextRecords.length === 1 ? '' : 's'} from ${file.name}.`,
+        )
+      } catch (historyError) {
+        setUploadMessage(
+          `Loaded ${nextRecords.length} row${nextRecords.length === 1 ? '' : 's'} from ${file.name}, but history save failed: ${historyError.message || 'Could not reach the API.'}`,
+        )
+      }
     } catch (error) {
       setRecords([])
       setUploadMessage(error.message || 'Could not read that file. Please upload a valid CSV, XLS, or XLSX file.')
