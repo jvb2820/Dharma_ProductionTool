@@ -880,6 +880,7 @@ function buildPaymentHistoryDatabaseRow(row) {
     customer_name: row['Customer Name'] || null,
     discount_name: row['Discount Name'] || null,
     verification: row.Verification || null,
+    dharma_orders: row['Dharma Orders'] || null,
     raw_data: row,
     imported_at: new Date().toISOString(),
   }
@@ -896,6 +897,7 @@ function normalizePaymentHistoryDatabaseRow(row) {
     'Customer Name': row.customer_name ?? '',
     'Discount Name': row.discount_name ?? '',
     Verification: row.verification ?? '',
+    'Dharma Orders': row.dharma_orders ?? row.raw_data?.['Dharma Orders'] ?? '',
     importedAt: row.imported_at ?? null,
   }
 }

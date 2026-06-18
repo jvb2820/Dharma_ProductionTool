@@ -12,9 +12,11 @@ const tableHeaders = [
   'Customer Name',
   'Discount Name',
   'Verification',
+  'Dharma Orders',
 ]
 
-const uploadHeaders = tableHeaders.filter((header) => header !== 'Verification')
+const manualHeaders = ['Dharma Orders', 'Verification']
+const uploadHeaders = tableHeaders.filter((header) => !manualHeaders.includes(header))
 
 const uploadHeaderAliases = {
   Date: ['Paid Date', 'Paid Date All Pipelines', 'Paid Date (All Pipelines)'],
@@ -51,6 +53,13 @@ function formatMoney(value) {
 }
 
 function getVerificationClass(value) {
+  if (value === 'Yes') return 'verified'
+  if (value === 'No') return 'missing'
+
+  return 'pending'
+}
+
+function getManualSelectClass(value) {
   if (value === 'Yes') return 'verified'
   if (value === 'No') return 'missing'
 
@@ -140,6 +149,7 @@ function getRowsFromWorkbook(workbook) {
       }, {})
 
       record.Verification = ''
+      record['Dharma Orders'] = ''
 
       const hasDashboardValue = uploadHeaders.some((header) => record[header])
 
@@ -324,6 +334,25 @@ function HomeDashboard() {
     }
   }
 
+  const handleManualDharmaOrdersChange = async (rowIndex, dharmaOrders) => {
+    const updatedRecord = {
+      ...records[rowIndex],
+      'Dharma Orders': dharmaOrders,
+    }
+
+    setRecords((currentRecords) =>
+      currentRecords.map((record, index) => (index === rowIndex ? updatedRecord : record)),
+    )
+
+    try {
+      const historyRows = await savePaymentHistory([updatedRecord])
+      setHistoryRecords(historyRows)
+      setUploadMessage('Dharma Orders saved to history.')
+    } catch (error) {
+      setUploadMessage(error.message || 'Could not save Dharma Orders.')
+    }
+  }
+
   const handleHistoryVerificationChange = async (rowIndex, verification) => {
     const updatedRecord = {
       ...filteredHistoryRecords[rowIndex],
@@ -340,6 +369,25 @@ function HomeDashboard() {
       setUploadMessage('History verification updated.')
     } catch (error) {
       setUploadMessage(error.message || 'Could not update history verification.')
+    }
+  }
+
+  const handleHistoryDharmaOrdersChange = async (rowIndex, dharmaOrders) => {
+    const updatedRecord = {
+      ...filteredHistoryRecords[rowIndex],
+      'Dharma Orders': dharmaOrders,
+    }
+
+    setHistoryRecords((currentRecords) =>
+      currentRecords.map((record) => (record.rowId === updatedRecord.rowId ? updatedRecord : record)),
+    )
+
+    try {
+      const historyRows = await savePaymentHistory([updatedRecord])
+      setHistoryRecords(historyRows)
+      setUploadMessage('History Dharma Orders updated.')
+    } catch (error) {
+      setUploadMessage(error.message || 'Could not update history Dharma Orders.')
     }
   }
 
@@ -502,6 +550,17 @@ function HomeDashboard() {
                                     <option value="Yes">Yes</option>
                                     <option value="No">No</option>
                                   </select>
+                                ) : header === 'Dharma Orders' ? (
+                                  <select
+                                    aria-label={`Dharma Orders for ${record['Customer Name'] || `row ${rowIndex + 1}`}`}
+                                    className={`verification-select ${getManualSelectClass(record[header])}`}
+                                    value={record[header] || ''}
+                                    onChange={(event) => handleManualDharmaOrdersChange(rowIndex, event.target.value)}
+                                  >
+                                    <option value="">-</option>
+                                    <option value="Yes">Yes</option>
+                                    <option value="No">No</option>
+                                  </select>
                                 ) : (
                                   record[header] || '-'
                                 )}
@@ -601,6 +660,17 @@ function HomeDashboard() {
                                     onChange={(event) => handleHistoryVerificationChange(rowIndex, event.target.value)}
                                   >
                                     <option value="">Pending</option>
+                                    <option value="Yes">Yes</option>
+                                    <option value="No">No</option>
+                                  </select>
+                                ) : header === 'Dharma Orders' ? (
+                                  <select
+                                    aria-label={`History Dharma Orders for ${record['Customer Name'] || `row ${rowIndex + 1}`}`}
+                                    className={`verification-select ${getManualSelectClass(record[header])}`}
+                                    value={record[header] || ''}
+                                    onChange={(event) => handleHistoryDharmaOrdersChange(rowIndex, event.target.value)}
+                                  >
+                                    <option value="">-</option>
                                     <option value="Yes">Yes</option>
                                     <option value="No">No</option>
                                   </select>

@@ -763,7 +763,13 @@
 
 .home-table th:nth-child(5),
 .home-table td:nth-child(5) {
-  width: 23%;
+  width: 20%;
+}
+
+.home-table th:nth-child(9),
+.home-table td:nth-child(9) {
+  width: 9%;
+  text-align: center;
 }
 
 .home-table th:nth-child(8),
