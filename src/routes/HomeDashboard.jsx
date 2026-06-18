@@ -15,13 +15,25 @@ const tableHeaders = [
 
 const uploadHeaders = tableHeaders.filter((header) => header !== 'Verification')
 
+const uploadHeaderAliases = {
+  Date: ['Paid Date', 'Paid Date All Pipelines', 'Paid Date (All Pipelines)'],
+  'Total Collected': ['Amount'],
+  'Tender Note': ['Payment Note', 'Payment Notes'],
+  'Staff Name': ['Deal Owner'],
+  Description: ['Deal Description', 'Deal Description Aggregate', 'Deal Description (Aggregate)'],
+  'Customer Name': ['Associated Contact', 'Associated Contacts'],
+  'Discount Name': ['Deal', 'Deals', 'Count Deals', '(Count) Deals', 'Discount'],
+}
+
 const normalizeHeader = (value) =>
   String(value ?? '')
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '')
 
-const normalizedUploadHeaders = uploadHeaders.map((header) => normalizeHeader(header))
+const uploadHeaderOptions = uploadHeaders.map((header) =>
+  [header, ...(uploadHeaderAliases[header] ?? [])].map((option) => normalizeHeader(option)),
+)
 
 function parseMoney(value) {
   const amount = Number(String(value ?? '').replace(/,/g, '').replace(/[^\d.-]/g, ''))
@@ -56,7 +68,7 @@ function getRowsFromWorkbook(workbook) {
     const headerRowIndex = rows.findIndex((row) => {
       const rowHeaders = row.map((cell) => normalizeHeader(cell))
 
-      return normalizedUploadHeaders.filter((header) => rowHeaders.includes(header)).length >= 2
+      return uploadHeaderOptions.filter((options) => options.some((header) => rowHeaders.includes(header))).length >= 2
     })
 
     if (headerRowIndex === -1) {
@@ -64,7 +76,9 @@ function getRowsFromWorkbook(workbook) {
     }
 
     const headerRow = rows[headerRowIndex].map((cell) => normalizeHeader(cell))
-    const columnIndexes = normalizedUploadHeaders.map((header) => headerRow.indexOf(header))
+    const columnIndexes = uploadHeaderOptions.map((options) =>
+      headerRow.findIndex((header) => options.includes(header)),
+    )
 
     return rows.slice(headerRowIndex + 1).reduce((records, row) => {
       const record = uploadHeaders.reduce((currentRecord, header, index) => {
