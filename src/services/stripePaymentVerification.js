@@ -27,5 +27,9 @@ export async function verifyStripePayments(rows) {
 
   const payload = await response.json()
 
-  return Array.isArray(payload.rows) ? payload.rows : []
+  return {
+    rows: Array.isArray(payload.rows) ? payload.rows : [],
+    unrecordedPayments: Array.isArray(payload.unrecordedPayments) ? payload.unrecordedPayments : [],
+    updatedAt: payload.updatedAt ?? null,
+  }
 }

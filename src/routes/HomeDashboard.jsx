@@ -117,6 +117,17 @@ function getYesterdayEdtDateValue() {
   return todayUtc.toISOString().slice(0, 10)
 }
 
+function getUniquePaymentDates(rows) {
+  return [...new Set(rows.map((row) => dateValueToIso(row.Date)).filter(Boolean))]
+}
+
+function formatAuditPaymentDates(dates) {
+  if (!dates.length) return 'uploaded payment date'
+  if (dates.length === 1) return `${dates[0]} EDT`
+
+  return `${dates.length} uploaded EDT dates`
+}
+
 function getRowsFromWorkbook(workbook) {
   return workbook.SheetNames.flatMap((sheetName) => {
     const worksheet = workbook.Sheets[sheetName]
@@ -164,6 +175,8 @@ function HomeDashboard() {
   const [activeHomeView, setActiveHomeView] = useState('verification')
   const [uploadMessage, setUploadMessage] = useState('')
   const [uploadedFileName, setUploadedFileName] = useState('')
+  const [unrecordedPayments, setUnrecordedPayments] = useState([])
+  const [hasCheckedUnrecordedPayments, setHasCheckedUnrecordedPayments] = useState(false)
   const [isVerifying, setIsVerifying] = useState(false)
   const [isHistoryLoading, setIsHistoryLoading] = useState(true)
   const [historyDate, setHistoryDate] = useState(() => getYesterdayEdtDateValue())
@@ -216,6 +229,9 @@ function HomeDashboard() {
     }
   }, [filteredHistoryRecords])
 
+  const uploadedPaymentDates = useMemo(() => getUniquePaymentDates(records), [records])
+  const auditPaymentDateLabel = formatAuditPaymentDates(uploadedPaymentDates)
+
   useEffect(() => {
     let isCurrent = true
 
@@ -250,6 +266,8 @@ function HomeDashboard() {
 
     setUploadMessage(`Reading ${file.name}...`)
     setUploadedFileName('')
+    setUnrecordedPayments([])
+    setHasCheckedUnrecordedPayments(false)
     setIsVerifying(false)
 
     try {
@@ -295,7 +313,8 @@ function HomeDashboard() {
         ...record,
         Verification: '',
       }))
-      const verificationRows = await verifyStripePayments(recordsToVerify)
+      const verificationResult = await verifyStripePayments(recordsToVerify)
+      const verificationRows = verificationResult.rows
       const verifiedRecords = recordsToVerify.map((record, index) => ({
         ...record,
         Verification: verificationRows[index]?.verification === 'Yes' ? 'Yes' : 'No',
@@ -304,6 +323,8 @@ function HomeDashboard() {
 
       setRecords(verifiedRecords)
       setHistoryRecords(historyRows)
+      setUnrecordedPayments(verificationResult.unrecordedPayments)
+      setHasCheckedUnrecordedPayments(true)
       setUploadMessage(
         `Stripe verification complete for ${verifiedRecords.length} row${verifiedRecords.length === 1 ? '' : 's'}${uploadedFileName ? ` from ${uploadedFileName}` : ''}.`,
       )
@@ -515,6 +536,42 @@ function HomeDashboard() {
                   </article>
                 </section>
               </div>
+
+              {hasCheckedUnrecordedPayments ? (
+                <section className="unrecorded-payments-panel" aria-label="Payments not in uploaded sheet">
+                  <div className="unrecorded-payments-heading">
+                    <div>
+                      <h2>Payments Not In Sheet</h2>
+                      <p>Checked all Stripe paid charges for {auditPaymentDateLabel} against this uploaded sheet.</p>
+                    </div>
+                    <strong>{unrecordedPayments.length}</strong>
+                  </div>
+                  {unrecordedPayments.length ? (
+                    <div className="unrecorded-payments-list">
+                      {unrecordedPayments.map((payment) => (
+                        <article className="unrecorded-payment-item" key={payment.id}>
+                          <div>
+                            <strong>{payment.amount}</strong>
+                            <span>{payment.paymentDate}</span>
+                          </div>
+                          <div>
+                            <span>{payment.customerName || payment.customerEmail || 'No customer details'}</span>
+                            <small>{payment.description || payment.id}</small>
+                          </div>
+                          <div>
+                            <span>{payment.createdAt || '-'}</span>
+                            <small>{payment.id}</small>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="unrecorded-payments-empty">
+                      No Unrecorded Payment Found for {auditPaymentDateLabel}.
+                    </p>
+                  )}
+                </section>
+              ) : null}
 
               <div className="table-panel tracking-panel home-table-panel">
                 <div className="table-shell">

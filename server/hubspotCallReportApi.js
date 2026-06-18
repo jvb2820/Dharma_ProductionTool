@@ -1992,41 +1992,18 @@ function parseMoneyToCents(value) {
 }
 
 function parsePaymentDateRange(value) {
-  const rawValue = String(value ?? '').trim()
-  if (!rawValue) return null
+  const paymentDate = paymentDateToIso(value)
+  if (!paymentDate) return null
 
-  const isoMatch = rawValue.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
-  const slashMatch = rawValue.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/)
-  let year
-  let month
-  let day
+  const start = zonedStartOfDayUtc(paymentDate)
+  const end = zonedStartOfDayUtc(addDaysToIsoDate(paymentDate, 1))
 
-  if (isoMatch) {
-    year = Number(isoMatch[1])
-    month = Number(isoMatch[2])
-    day = Number(isoMatch[3])
-  } else if (slashMatch) {
-    month = Number(slashMatch[1])
-    day = Number(slashMatch[2])
-    year = Number(slashMatch[3])
-    if (year < 100) year += 2000
-  } else {
-    const parsedDate = new Date(rawValue)
-    if (Number.isNaN(parsedDate.getTime())) return null
-
-    year = parsedDate.getFullYear()
-    month = parsedDate.getMonth() + 1
-    day = parsedDate.getDate()
-  }
-
-  const start = Date.UTC(year, month - 1, day, 0, 0, 0)
-  const end = Date.UTC(year, month - 1, day + 1, 0, 0, 0)
-
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null
 
   return {
-    gte: Math.floor(start / 1000),
-    lt: Math.floor(end / 1000),
+    date: paymentDate,
+    gte: Math.floor(start.getTime() / 1000),
+    lt: Math.floor(end.getTime() / 1000),
   }
 }
 
@@ -2091,6 +2068,15 @@ async function stripeGet(path, params = {}) {
 
 async function listStripeChargesForRow(row, amountCents) {
   const dateRange = parsePaymentDateRange(row.Date)
+
+  if (!dateRange) return []
+
+  const charges = await listStripeChargesForDateRange(dateRange)
+
+  return charges.filter((charge) => charge.amount === amountCents)
+}
+
+async function listStripeChargesForDateRange(dateRange) {
   const charges = []
   let startingAfter = ''
 
@@ -2107,11 +2093,89 @@ async function listStripeChargesForRow(row, amountCents) {
     startingAfter = payload.has_more && pageCharges.length ? pageCharges.at(-1).id : ''
   } while (startingAfter && charges.length < 500)
 
-  return charges.filter((charge) => charge.amount === amountCents)
+  return charges.filter(chargeMatchesUploadedRow)
 }
 
 function chargeMatchesUploadedRow(charge) {
   return charge.paid === true || charge.status === 'succeeded'
+}
+
+function formatStripeAmount(amount, currency) {
+  const currencyCode = String(currency || 'usd').toUpperCase()
+
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: currencyCode,
+    maximumFractionDigits: 2,
+  }).format((amount ?? 0) / 100)
+}
+
+function formatStripeCreatedAt(created) {
+  if (!created) return ''
+
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: reportTimeZone,
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(created * 1000))
+}
+
+function normalizeStripeChargeForUnrecorded(charge, paymentDate) {
+  return {
+    id: charge.id,
+    paymentDate,
+    amount: formatStripeAmount(charge.amount, charge.currency),
+    amountCents: charge.amount ?? 0,
+    currency: String(charge.currency ?? 'usd').toUpperCase(),
+    createdAt: formatStripeCreatedAt(charge.created),
+    customerName: charge.billing_details?.name ?? '',
+    customerEmail: charge.billing_details?.email ?? charge.receipt_email ?? '',
+    description: charge.description ?? '',
+    status: charge.status ?? '',
+  }
+}
+
+function countUploadedPaymentAmountsByDate(rows) {
+  return rows.reduce((lookup, row) => {
+    const dateRange = parsePaymentDateRange(row.Date)
+    const amountCents = parseMoneyToCents(row['Total Collected'])
+
+    if (!dateRange?.date || !amountCents) return lookup
+
+    const amountCounts = lookup.get(dateRange.date) ?? new Map()
+    amountCounts.set(amountCents, (amountCounts.get(amountCents) ?? 0) + 1)
+    lookup.set(dateRange.date, amountCounts)
+
+    return lookup
+  }, new Map())
+}
+
+async function findStripePaymentsNotInSheet(rows) {
+  const uploadedAmountsByDate = countUploadedPaymentAmountsByDate(rows)
+  const unrecordedPayments = []
+
+  for (const [paymentDate, amountCounts] of uploadedAmountsByDate) {
+    const dateRange = parsePaymentDateRange(paymentDate)
+    if (!dateRange) continue
+
+    const stripeCharges = await listStripeChargesForDateRange(dateRange)
+
+    stripeCharges.forEach((charge) => {
+      const remainingUploadedCount = amountCounts.get(charge.amount) ?? 0
+
+      if (remainingUploadedCount > 0) {
+        amountCounts.set(charge.amount, remainingUploadedCount - 1)
+        return
+      }
+
+      unrecordedPayments.push(normalizeStripeChargeForUnrecorded(charge, paymentDate))
+    })
+  }
+
+  return unrecordedPayments
 }
 
 async function verifyStripePaymentRow(row) {
@@ -2355,11 +2419,15 @@ const server = createServer(async (request, response) => {
         return
       }
 
-      const results = await verifyStripePaymentRows(rows)
+      const [results, unrecordedPayments] = await Promise.all([
+        verifyStripePaymentRows(rows),
+        findStripePaymentsNotInSheet(rows),
+      ])
 
       sendJson(request, response, 200, {
         source: 'stripe',
         rows: results,
+        unrecordedPayments,
         updatedAt: new Date().toISOString(),
       }, {
         'Cache-Control': 'no-store',

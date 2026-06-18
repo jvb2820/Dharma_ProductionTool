@@ -656,6 +656,104 @@
   min-height: 184px;
 }
 
+.unrecorded-payments-panel {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 18px;
+  border: 1px solid rgba(0, 86, 63, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 254, 249, 0.96);
+  box-shadow: 0 18px 44px rgba(47, 73, 57, 0.08);
+}
+
+.unrecorded-payments-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.unrecorded-payments-heading h2,
+.unrecorded-payments-heading p {
+  margin: 0;
+}
+
+.unrecorded-payments-heading h2 {
+  color: #1f3428;
+  font-size: 1rem;
+}
+
+.unrecorded-payments-heading p,
+.unrecorded-payment-item small,
+.unrecorded-payments-empty {
+  color: #516f5f;
+  font-size: 0.76rem;
+  font-weight: 850;
+}
+
+.unrecorded-payments-heading strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  min-height: 34px;
+  border-radius: 999px;
+  color: #8c1f16;
+  background: #ffe1dc;
+}
+
+.unrecorded-payments-list {
+  display: grid;
+  gap: 8px;
+}
+
+.unrecorded-payment-item {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr) minmax(180px, 0.7fr);
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(0, 86, 63, 0.12);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.unrecorded-payment-item div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.unrecorded-payment-item strong {
+  color: #1f3428;
+  font-size: 1rem;
+}
+
+.unrecorded-payment-item span {
+  overflow: hidden;
+  color: #0a5d43;
+  font-size: 0.82rem;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unrecorded-payment-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unrecorded-payments-empty {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #8ac184;
+  border-radius: 8px;
+  color: #0f4f26;
+  background: #dff5d8;
+}
+
 .home-table-panel {
   width: min(100%, 1720px);
 }
@@ -2351,6 +2449,10 @@
 
   .home-view-tabs button {
     min-height: 44px;
+  }
+
+  .unrecorded-payment-item {
+    grid-template-columns: 1fr;
   }
 
   .home-total-card,
