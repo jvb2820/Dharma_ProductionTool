@@ -1,4 +1,5 @@
 import { createServer } from 'node:http'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -11,6 +12,7 @@ const stripeBaseUrl = 'https://api.stripe.com'
 const shopifyApiVersion = process.env.SHOPIFY_API_VERSION ?? '2026-01'
 const defaultShopifyStatusSheetCsvUrl = 'https://docs.google.com/spreadsheets/d/1uBJLgzyYtBnPxR9x-DuHRcJz1DTJm3YSK7halebtWLg/gviz/tq?tqx=out:csv&gid=608356906'
 const supabaseTrackingTable = process.env.SUPABASE_TRACKING_TABLE ?? 'tracking_dashboard'
+const supabasePaymentHistoryTable = process.env.SUPABASE_PAYMENT_HISTORY_TABLE ?? 'payment_history'
 const excludedTrackingOrderNumbers = readExcludedTrackingOrderNumbers()
 const overdueBusinessDaysThreshold = 5
 const connectedDispositionId = 'f240bbac-87c9-4f6e-bf70-924b57d47db7'
@@ -392,6 +394,48 @@ function isoDateToDisplay(value) {
     day: '2-digit',
     year: 'numeric',
   }).format(date)
+}
+
+function paymentDateToIso(value) {
+  const rawValue = String(value ?? '').trim()
+  if (!rawValue) return null
+
+  const isoMatch = rawValue.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  const slashMatch = rawValue.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/)
+  let year
+  let month
+  let day
+
+  if (isoMatch) {
+    year = Number(isoMatch[1])
+    month = Number(isoMatch[2])
+    day = Number(isoMatch[3])
+  } else if (slashMatch) {
+    month = Number(slashMatch[1])
+    day = Number(slashMatch[2])
+    year = Number(slashMatch[3])
+    if (year < 100) year += 2000
+  } else {
+    const parsedDate = new Date(rawValue)
+    if (Number.isNaN(parsedDate.getTime())) return null
+
+    year = parsedDate.getFullYear()
+    month = parsedDate.getMonth() + 1
+    day = parsedDate.getDate()
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day, 12))
+
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null
+  }
+
+  return date.toISOString().slice(0, 10)
 }
 
 function countTrackingBusinessDays(startDate, endDate = new Date()) {
@@ -798,6 +842,94 @@ async function loadTrackingRowsFromSupabase() {
   const rows = await supabaseRequest(`/${supabaseTrackingTable}?${params.toString()}`)
 
   return Array.isArray(rows) ? filterExcludedTrackingOrders(rows).map(normalizeTrackingDatabaseRow) : []
+}
+
+function normalizePaymentHistoryKey(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+}
+
+function buildPaymentHistoryRowId(row, paymentDate, amountCents) {
+  const key = [
+    paymentDate ?? row.Date ?? '',
+    amountCents ?? '',
+    row['Customer Name'],
+    row['Staff Name'],
+    row.Description,
+    row['Tender Note'],
+  ].map(normalizePaymentHistoryKey).join('|')
+
+  return createHash('sha256').update(key).digest('hex')
+}
+
+function buildPaymentHistoryDatabaseRow(row) {
+  const paymentDate = paymentDateToIso(row.Date)
+  const totalCollectedCents = parseMoneyToCents(row['Total Collected'])
+
+  return {
+    row_id: buildPaymentHistoryRowId(row, paymentDate, totalCollectedCents),
+    payment_date: paymentDate,
+    display_date: row.Date || null,
+    total_collected: row['Total Collected'] || null,
+    total_collected_cents: totalCollectedCents,
+    tender_note: row['Tender Note'] || null,
+    staff_name: row['Staff Name'] || null,
+    description: row.Description || null,
+    customer_name: row['Customer Name'] || null,
+    discount_name: row['Discount Name'] || null,
+    verification: row.Verification || null,
+    raw_data: row,
+    imported_at: new Date().toISOString(),
+  }
+}
+
+function normalizePaymentHistoryDatabaseRow(row) {
+  return {
+    rowId: row.row_id,
+    Date: isoDateToDisplay(row.payment_date) || row.display_date || '',
+    'Total Collected': row.total_collected ?? '',
+    'Tender Note': row.tender_note ?? '',
+    'Staff Name': row.staff_name ?? '',
+    Description: row.description ?? '',
+    'Customer Name': row.customer_name ?? '',
+    'Discount Name': row.discount_name ?? '',
+    Verification: row.verification ?? '',
+    importedAt: row.imported_at ?? null,
+  }
+}
+
+async function upsertPaymentHistoryRowsToSupabase(rows) {
+  if (!hasSupabaseConfig() || rows.length === 0) return []
+
+  const databaseRows = rows.map(buildPaymentHistoryDatabaseRow)
+
+  for (let index = 0; index < databaseRows.length; index += 500) {
+    const batch = databaseRows.slice(index, index + 500)
+
+    await supabaseRequest(`/${supabasePaymentHistoryTable}?on_conflict=row_id`, {
+      method: 'POST',
+      headers: {
+        Prefer: 'resolution=merge-duplicates,return=minimal',
+      },
+      body: batch,
+    })
+  }
+
+  return databaseRows
+}
+
+async function loadPaymentHistoryRowsFromSupabase() {
+  if (!hasSupabaseConfig()) return []
+
+  const params = new URLSearchParams({
+    select: '*',
+    order: 'payment_date.desc,imported_at.desc,row_id.asc',
+  })
+  const rows = await supabaseRequest(`/${supabasePaymentHistoryTable}?${params.toString()}`)
+
+  return Array.isArray(rows) ? rows.map(normalizePaymentHistoryDatabaseRow) : []
 }
 
 function parseCsv(text) {
@@ -2148,6 +2280,62 @@ const server = createServer(async (request, response) => {
     }, {
       'Cache-Control': 'no-store',
     })
+    return
+  }
+
+  if (requestUrl.pathname === '/api/payment-history' && request.method === 'GET') {
+    try {
+      const rows = await loadPaymentHistoryRowsFromSupabase()
+
+      sendJson(request, response, 200, {
+        source: hasSupabaseConfig() ? 'supabase' : 'none',
+        rows,
+        updatedAt: new Date().toISOString(),
+      }, {
+        'Cache-Control': 'no-store',
+      })
+    } catch (error) {
+      sendJson(request, response, 500, {
+        message: error.message,
+      }, {
+        'Cache-Control': 'no-store',
+      })
+    }
+    return
+  }
+
+  if (requestUrl.pathname === '/api/payment-history' && request.method === 'POST') {
+    try {
+      const payload = await readJsonRequest(request)
+      const rows = Array.isArray(payload.rows) ? payload.rows.slice(0, 1000) : []
+
+      if (!rows.length) {
+        sendJson(request, response, 400, {
+          message: 'Expected a rows array to save.',
+        }, {
+          'Cache-Control': 'no-store',
+        })
+        return
+      }
+
+      const savedRows = await upsertPaymentHistoryRowsToSupabase(rows)
+      const historyRows = await loadPaymentHistoryRowsFromSupabase()
+
+      sendJson(request, response, 200, {
+        source: hasSupabaseConfig() ? 'supabase' : 'none',
+        savedCount: savedRows.length,
+        rows: historyRows,
+        updatedAt: new Date().toISOString(),
+      }, {
+        'Cache-Control': 'no-store',
+      })
+    } catch (error) {
+      sendJson(request, response, 500, {
+        message: error.message,
+      }, {
+        'Cache-Control': 'no-store',
+      })
+    }
     return
   }
 
