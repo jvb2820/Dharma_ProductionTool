@@ -33,6 +33,7 @@ const hubspotMaxAttempts = 6
 const hubspotRequestSpacingMs = 250
 const uspsTrackingCacheTtlMs = 30 * 60 * 1000
 const stripeVerificationCacheTtlMs = 5 * 60 * 1000
+const callReportErrorTtlMs = 2 * 60 * 1000
 const shopifyAccessTokenRefreshBufferMs = 5 * 60 * 1000
 let lastHubspotRequestAt = 0
 let hubspotRequestQueue = Promise.resolve()
@@ -569,15 +570,16 @@ async function hubspotFetch(path, options = {}) {
     }
 
     const body = await response.text()
+    const retryableStatus = response.status === 429 || response.status >= 500
 
-    if (response.status !== 429 || attempt === hubspotMaxAttempts) {
+    if (!retryableStatus || attempt === hubspotMaxAttempts) {
       throw new Error(`HubSpot request failed (${response.status}): ${body}`)
     }
 
     const retryAfterSeconds = Number(response.headers.get('retry-after'))
     const retryDelayMs = Number.isFinite(retryAfterSeconds)
       ? retryAfterSeconds * 1000
-      : attempt * 2500
+      : attempt * (response.status === 429 ? 2500 : 5000)
 
     await delay(retryDelayMs)
   }
@@ -1751,16 +1753,14 @@ async function loadContactIdsByCallId(callIds) {
   const normalizedCallIds = [...new Set(callIds.map((callId) => String(callId ?? '').trim()).filter(Boolean))]
   const contactIdsByCallId = new Map()
 
-  const payloads = await Promise.all(chunkArray(normalizedCallIds, 100).map((callIdChunk) =>
-    hubspotFetch('/crm/v4/associations/calls/contacts/batch/read', {
+  for (const callIdChunk of chunkArray(normalizedCallIds, 100)) {
+    const payload = await hubspotFetch('/crm/v4/associations/calls/contacts/batch/read', {
       method: 'POST',
       body: {
         inputs: callIdChunk.map((id) => ({ id })),
       },
-    }),
-  ))
+    })
 
-  payloads.forEach((payload) => {
     ;(payload.results ?? []).forEach((result) => {
       const callId = String(result.from?.id ?? '')
       const contactIds = (result.to ?? [])
@@ -1769,7 +1769,7 @@ async function loadContactIdsByCallId(callIds) {
 
       contactIdsByCallId.set(callId, contactIds)
     })
-  })
+  }
 
   return contactIdsByCallId
 }
@@ -1778,24 +1778,22 @@ async function loadContactEmailsById(contactIds) {
   const normalizedContactIds = [...new Set(contactIds.map((contactId) => String(contactId ?? '').trim()).filter(Boolean))]
   const contactEmailsById = new Map()
 
-  const payloads = await Promise.all(chunkArray(normalizedContactIds, 100).map((contactIdChunk) =>
-    hubspotFetch('/crm/v3/objects/contacts/batch/read', {
+  for (const contactIdChunk of chunkArray(normalizedContactIds, 100)) {
+    const payload = await hubspotFetch('/crm/v3/objects/contacts/batch/read', {
       method: 'POST',
       body: {
         properties: ['email'],
         inputs: contactIdChunk.map((id) => ({ id })),
       },
-    }),
-  ))
+    })
 
-  payloads.forEach((payload) => {
     ;(payload.results ?? []).forEach((contact) => {
       const email = normalizeEmail(contact.properties?.email)
       if (email) {
         contactEmailsById.set(String(contact.id), email)
       }
     })
-  })
+  }
 
   return contactEmailsById
 }
@@ -2519,7 +2517,12 @@ const server = createServer(async (request, response) => {
 
     const reportError = reportErrors.get(cacheKey)
 
-    if (!forceRefresh && reportError && !inFlightReports.has(cacheKey)) {
+    if (
+      !forceRefresh
+      && reportError
+      && !inFlightReports.has(cacheKey)
+      && Date.now() - new Date(reportError.failedAt).getTime() < callReportErrorTtlMs
+    ) {
       sendJson(request, response, 500, {
         message: reportError.message,
         failedAt: reportError.failedAt,
@@ -2527,6 +2530,10 @@ const server = createServer(async (request, response) => {
         'Cache-Control': 'no-store',
       })
       return
+    }
+
+    if (reportError && Date.now() - new Date(reportError.failedAt).getTime() >= callReportErrorTtlMs) {
+      reportErrors.delete(cacheKey)
     }
 
     startCallReportBuild(cacheKey, selectedDate)
