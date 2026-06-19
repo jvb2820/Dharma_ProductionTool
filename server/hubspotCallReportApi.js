@@ -2004,6 +2004,45 @@ function parseMoneyToCents(value) {
   return Math.round(Math.abs(amount) * 100)
 }
 
+function extractEmails(value) {
+  const normalizedValue = String(value ?? '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\s*@\s*/g, '@')
+
+  const matches = normalizedValue.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)
+
+  return [...new Set((matches ?? []).map(normalizeEmail))]
+}
+
+function getUploadedRowEmails(row) {
+  return [
+    ...extractEmails(row['Tender Note']),
+    ...extractEmails(row['Customer Name']),
+  ]
+}
+
+function getStripeChargeEmails(charge) {
+  const customer = typeof charge.customer === 'object' && charge.customer !== null ? charge.customer : null
+
+  return [
+    charge.billing_details?.email,
+    charge.receipt_email,
+    customer?.email,
+  ]
+    .map(normalizeEmail)
+    .filter(Boolean)
+}
+
+function stripeChargeMatchesUploadedCustomer(charge, row) {
+  const uploadedEmails = getUploadedRowEmails(row)
+
+  if (!uploadedEmails.length) return true
+
+  const stripeEmails = getStripeChargeEmails(charge)
+
+  return uploadedEmails.some((uploadedEmail) => stripeEmails.includes(uploadedEmail))
+}
+
 function parsePaymentDateRange(value) {
   const paymentDate = paymentDateToIso(value)
   if (!paymentDate) return null
@@ -2098,6 +2137,7 @@ async function listStripeChargesForDateRange(dateRange) {
       limit: 100,
       'created[gte]': dateRange?.gte,
       'created[lt]': dateRange?.lt,
+      'expand[]': 'data.customer',
       starting_after: startingAfter,
     })
 
@@ -2201,7 +2241,7 @@ async function verifyStripePaymentRow(row) {
     }
   }
 
-  const cacheKey = `${row.Date ?? ''}:${amountCents}`
+  const cacheKey = `${row.Date ?? ''}:${amountCents}:${getUploadedRowEmails(row).join(',')}`
   const cachedVerification = stripeVerificationCache.get(cacheKey)
 
   if (cachedVerification && Date.now() - cachedVerification.cachedAt < stripeVerificationCacheTtlMs) {
@@ -2209,7 +2249,7 @@ async function verifyStripePaymentRow(row) {
   }
 
   const charges = await listStripeChargesForRow(row, amountCents)
-  const matchedCharge = charges.find(chargeMatchesUploadedRow)
+  const matchedCharge = charges.find((charge) => stripeChargeMatchesUploadedCustomer(charge, row))
   const result = {
     verification: matchedCharge ? 'Yes' : 'No',
     matchedChargeId: matchedCharge?.id ?? '',
