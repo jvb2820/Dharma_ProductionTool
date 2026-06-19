@@ -2383,7 +2383,7 @@ async function findStripePaymentsNotInSheet(rows) {
       if (duplicateChargeIds.has(charge.id)) {
         unmatchedCharges.push({
           ...charge,
-          unrecordedWarning: 'Duplicate same-email amount not fully recorded in sheet',
+          unrecordedWarning: 'Duplicate Amount',
         })
         return
       }
