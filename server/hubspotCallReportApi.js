@@ -1095,6 +1095,42 @@ async function shopifyFetch(path, params = {}) {
   }
 }
 
+async function shopifyGraphql(query, variables = {}) {
+  const storeDomain = normalizeShopifyStoreDomain(process.env.SHOPIFY_STORE_DOMAIN)
+
+  if (!storeDomain) {
+    throw new Error('Missing SHOPIFY_STORE_DOMAIN')
+  }
+
+  const url = `https://${storeDomain}/admin/api/${shopifyApiVersion}/graphql.json`
+  const fetchWithToken = async (token) => fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': token,
+    },
+    body: JSON.stringify({ query, variables }),
+  })
+
+  const token = await getShopifyAccessToken(storeDomain)
+  let response = await fetchWithToken(token)
+
+  if (response.status === 401 || response.status === 403) {
+    const refreshedToken = await getShopifyAccessToken(storeDomain, { forceRefresh: true })
+
+    if (refreshedToken !== token) {
+      response = await fetchWithToken(refreshedToken)
+    }
+  }
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`Shopify GraphQL request failed (${response.status}): ${body}`)
+  }
+
+  return response.json()
+}
+
 function getUspsTrackingUrl(trackingNumber) {
   const normalizedTrackingNumber = normalizeTrackingNumber(trackingNumber)
 
@@ -2599,7 +2635,7 @@ function findBestCatalogMatch(item, catalog) {
   }
 }
 
-function parseDiscountAdjustment(discountName, subtotalCents) {
+function parseLocalDiscountAdjustment(discountName, subtotalCents) {
   const value = String(discountName ?? '').trim()
 
   if (!value || value === '-') {
@@ -2641,6 +2677,164 @@ function parseDiscountAdjustment(discountName, subtotalCents) {
   }
 }
 
+function readShopifyDiscountValue(discount, subtotalCents) {
+  const customerGets = discount?.customerGets
+  const value = customerGets?.value
+
+  if (!value) {
+    return {
+      discountCents: 0,
+      note: 'Shopify discount found, but discount value was not readable',
+    }
+  }
+
+  if (value.__typename === 'DiscountPercentage') {
+    const percentage = Number(value.percentage)
+    const discountCents = Number.isFinite(percentage)
+      ? Math.round(subtotalCents * percentage)
+      : 0
+
+    return {
+      discountCents,
+      note: `Shopify discount ${Math.round(percentage * 10000) / 100}%`,
+    }
+  }
+
+  if (value.__typename === 'DiscountAmount') {
+    const amountCents = parseMoneyToCents(value.amount?.amount)
+
+    return {
+      discountCents: amountCents ?? 0,
+      note: 'Shopify fixed discount',
+    }
+  }
+
+  return {
+    discountCents: 0,
+    note: `Unsupported Shopify discount type: ${value.__typename ?? 'unknown'}`,
+  }
+}
+
+async function resolveShopifyDiscountAdjustment(discountName, subtotalCents) {
+  const value = String(discountName ?? '').trim()
+
+  if (!value || value === '-') {
+    return {
+      label: '',
+      discountCents: 0,
+      note: '',
+      source: 'none',
+    }
+  }
+
+  const discountQuery = `
+    query DiscountByCode($code: String!) {
+      codeDiscountNodeByCode(code: $code) {
+        id
+        codeDiscount {
+          __typename
+          ... on DiscountCodeBasic {
+            title
+            customerGets {
+              value {
+                __typename
+                ... on DiscountPercentage {
+                  percentage
+                }
+                ... on DiscountAmount {
+                  amount {
+                    amount
+                    currencyCode
+                  }
+                }
+              }
+            }
+          }
+          ... on DiscountCodeBxgy {
+            title
+            customerGets {
+              value {
+                __typename
+                ... on DiscountPercentage {
+                  percentage
+                }
+                ... on DiscountAmount {
+                  amount {
+                    amount
+                    currencyCode
+                  }
+                }
+              }
+            }
+          }
+          ... on DiscountCodeFreeShipping {
+            title
+          }
+        }
+      }
+    }
+  `
+
+  try {
+    const payload = await shopifyGraphql(discountQuery, { code: value })
+    const accessDeniedError = (payload.errors ?? []).find((error) =>
+      String(error.message ?? '').toLowerCase().includes('access denied')
+      || String(error.extensions?.requiredAccess ?? '').toLowerCase().includes('read_discounts'),
+    )
+
+    if (accessDeniedError) {
+      return {
+        ...parseLocalDiscountAdjustment(value, subtotalCents),
+        label: value,
+        note: 'Shopify discount lookup requires read_discounts access',
+        source: 'shopify-access-missing',
+      }
+    }
+
+    if (payload.errors?.length) {
+      return {
+        ...parseLocalDiscountAdjustment(value, subtotalCents),
+        label: value,
+        note: payload.errors[0]?.message ?? 'Shopify discount lookup failed',
+        source: 'shopify-error',
+      }
+    }
+
+    const codeDiscount = payload.data?.codeDiscountNodeByCode?.codeDiscount
+
+    if (!codeDiscount) {
+      return {
+        ...parseLocalDiscountAdjustment(value, subtotalCents),
+        label: value,
+        note: 'Discount code not found in Shopify',
+        source: 'shopify-not-found',
+      }
+    }
+
+    if (codeDiscount.__typename === 'DiscountCodeFreeShipping') {
+      return {
+        label: value,
+        discountCents: 0,
+        note: 'Shopify free shipping discount',
+        source: 'shopify',
+      }
+    }
+
+    return {
+      label: codeDiscount.title || value,
+      ...readShopifyDiscountValue(codeDiscount, subtotalCents),
+      source: 'shopify',
+    }
+  } catch (error) {
+    return {
+      ...parseLocalDiscountAdjustment(value, subtotalCents),
+      label: value,
+      note: error.message || 'Shopify discount lookup failed',
+      source: 'shopify-error',
+    }
+  }
+}
+
 function formatCents(cents) {
   return formatStripeAmount(cents ?? 0, 'usd')
 }
@@ -2648,7 +2842,9 @@ function formatCents(cents) {
 async function auditShopifyPricingRows(rows) {
   const catalog = getProductPricingCatalog()
 
-  return rows.slice(0, 500).map((row, rowIndex) => {
+  const auditedRows = []
+
+  for (const [rowIndex, row] of rows.slice(0, 500).entries()) {
     const lineItems = parseDescriptionLineItems(row.Description)
     const auditedItems = lineItems.map((item) => {
       const match = findBestCatalogMatch(item, catalog)
@@ -2669,7 +2865,7 @@ async function auditShopifyPricingRows(rows) {
       }
     })
     const subtotalCents = auditedItems.reduce((total, item) => total + item.lineTotalCents, 0)
-    const discount = parseDiscountAdjustment(row['Discount Name'], subtotalCents)
+    const discount = await resolveShopifyDiscountAdjustment(row['Discount Name'], subtotalCents)
     const expectedTotalCents = Math.max(0, subtotalCents - discount.discountCents)
     const collectedCents = parseMoneyToCents(row['Total Collected']) ?? 0
     const differenceCents = collectedCents - expectedTotalCents
@@ -2680,7 +2876,7 @@ async function auditShopifyPricingRows(rows) {
         ? 'Match'
         : 'Mismatch'
 
-    return {
+    auditedRows.push({
       rowIndex,
       customerName: row['Customer Name'] ?? '',
       description: row.Description ?? '',
@@ -2688,13 +2884,16 @@ async function auditShopifyPricingRows(rows) {
       subtotal: formatCents(subtotalCents),
       discount: discount.discountCents ? `-${formatCents(discount.discountCents)}` : '$0.00',
       discountNote: discount.note,
+      discountSource: discount.source,
       expectedTotal: formatCents(expectedTotalCents),
       totalCollected: formatCents(collectedCents),
       difference: formatCents(differenceCents),
       status,
       items: auditedItems,
-    }
-  })
+    })
+  }
+
+  return auditedRows
 }
 
 async function buildCallReport(selectedDate) {

@@ -684,7 +684,12 @@ function HomeDashboard() {
                               </details>
                             </td>
                             <td>{auditRow.subtotal}</td>
-                            <td title={auditRow.discountNote || ''}>{auditRow.discount}</td>
+                            <td title={auditRow.discountNote || ''}>
+                              <span>{auditRow.discount}</span>
+                              {auditRow.discountNote ? (
+                                <small className="pricing-audit-discount-note">{auditRow.discountNote}</small>
+                              ) : null}
+                            </td>
                             <td>{auditRow.expectedTotal}</td>
                             <td>{auditRow.totalCollected}</td>
                             <td>{auditRow.difference}</td>

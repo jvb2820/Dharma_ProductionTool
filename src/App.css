@@ -841,6 +841,16 @@
   font-weight: 850;
 }
 
+.pricing-audit-discount-note {
+  display: block;
+  max-width: 180px;
+  margin-top: 4px;
+  color: #516f5f;
+  font-size: 0.68rem;
+  font-weight: 850;
+  white-space: normal;
+}
+
 .pricing-audit-status {
   display: inline-flex;
   align-items: center;
