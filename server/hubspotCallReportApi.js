@@ -23,6 +23,7 @@ const trackingCache = new Map()
 const uspsTrackingCache = new Map()
 const stripeVerificationCache = new Map()
 let sheetStatusCache = null
+let shopifyProductCatalogCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
 const callReportCacheVersion = 'contact-call-v6'
@@ -2465,6 +2466,243 @@ async function verifyStripePaymentRows(rows) {
   return results
 }
 
+async function loadShopifyProductCatalog(options = {}) {
+  if (
+    !options.forceRefresh
+    && shopifyProductCatalogCache
+    && Date.now() - shopifyProductCatalogCache.cachedAt < currentDateCacheTtlMs
+  ) {
+    return shopifyProductCatalogCache.products
+  }
+
+  const products = []
+  let pageInfo = ''
+  let pageCount = 0
+
+  do {
+    const params = pageInfo
+      ? { limit: 250, page_info: pageInfo }
+      : {
+        limit: 250,
+        status: 'active',
+        fields: 'id,title,product_type,status,tags,variants',
+      }
+    const { payload, nextPageInfo } = await shopifyFetch('/products.json', params)
+
+    products.push(...(payload.products ?? []))
+    pageInfo = nextPageInfo ?? ''
+    pageCount += 1
+  } while (pageInfo && pageCount < 20)
+
+  const catalog = products.flatMap((product) =>
+    (product.variants ?? []).map((variant) => {
+      const productTitle = product.title ?? ''
+      const variantTitle = variant.title === 'Default Title' ? '' : variant.title ?? ''
+      const searchableText = [
+        productTitle,
+        variantTitle,
+        variant.sku,
+        product.product_type,
+        product.tags,
+      ].filter(Boolean).join(' ')
+
+      return {
+        productId: product.id,
+        variantId: variant.id,
+        productTitle,
+        variantTitle,
+        sku: variant.sku ?? '',
+        productType: product.product_type ?? '',
+        tags: product.tags ?? '',
+        price: variant.price ?? '',
+        priceCents: parseMoneyToCents(variant.price),
+        searchableText,
+        normalizedText: normalizeMatchText(searchableText),
+        words: new Set(readPricingWords(searchableText)),
+      }
+    }),
+  )
+
+  shopifyProductCatalogCache = {
+    cachedAt: Date.now(),
+    products: catalog,
+  }
+
+  return catalog
+}
+
+function parseDescriptionLineItems(description) {
+  const text = String(description ?? '').trim()
+  if (!text) return []
+
+  const items = []
+  const pattern = /(\d+)\s*x\s+(.+?)(?=,\s*\d+\s*x\s+|$)/gis
+  let match
+
+  while ((match = pattern.exec(text)) !== null) {
+    const quantity = Number(match[1])
+    const name = String(match[2] ?? '').trim().replace(/\s+/g, ' ')
+
+    if (Number.isFinite(quantity) && quantity > 0 && name) {
+      items.push({ quantity, name })
+    }
+  }
+
+  return items.length > 0 ? items : [{ quantity: 1, name: text }]
+}
+
+function readPricingWords(value) {
+  return normalizeMatchText(value)
+    .split(' ')
+    .filter((word) => word.length >= 3)
+}
+
+function scoreCatalogMatch(item, catalogItem) {
+  const itemText = normalizeMatchText(item.name)
+  const itemWords = readPricingWords(item.name)
+
+  if (!itemText || itemWords.length === 0) return 0
+
+  let score = 0
+  const productTitleText = normalizeMatchText(catalogItem.productTitle)
+
+  if (catalogItem.normalizedText.includes(itemText)) score += 120
+  if (productTitleText && itemText.includes(productTitleText)) score += 80
+
+  itemWords.forEach((word) => {
+    if (catalogItem.words.has(word)) score += 12
+  })
+
+  const itemDose = itemText.match(/\b\d+\s*(?:mg|ml|iu)\b/i)?.[0]
+  if (itemDose && catalogItem.normalizedText.includes(normalizeMatchText(itemDose))) score += 35
+
+  ;['nad', 'glp', 'b12'].forEach((term) => {
+    if (itemWords.includes(term) && catalogItem.words.has(term)) score += 30
+  })
+
+  if (itemText.includes('compounded') && catalogItem.normalizedText.includes('compounded')) score += 15
+  if (itemText.includes('consultation') && catalogItem.normalizedText.includes('consultation')) score += 20
+
+  return score
+}
+
+function findBestCatalogMatch(item, catalog) {
+  const scoredMatches = catalog
+    .map((catalogItem) => ({
+      catalogItem,
+      score: scoreCatalogMatch(item, catalogItem),
+    }))
+    .filter((match) => match.score > 0)
+    .sort((left, right) => right.score - left.score)
+
+  const bestMatch = scoredMatches[0]
+
+  if (!bestMatch || bestMatch.score < 24) return null
+
+  return {
+    ...bestMatch.catalogItem,
+    score: bestMatch.score,
+  }
+}
+
+function parseDiscountAdjustment(discountName, subtotalCents) {
+  const value = String(discountName ?? '').trim()
+
+  if (!value || value === '-') {
+    return {
+      label: '',
+      discountCents: 0,
+      note: '',
+    }
+  }
+
+  const percentMatch = value.match(/(\d+(?:\.\d+)?)\s*%/)
+  if (percentMatch) {
+    const percent = Number(percentMatch[1])
+    const discountCents = Number.isFinite(percent)
+      ? Math.round(subtotalCents * (percent / 100))
+      : 0
+
+    return {
+      label: value,
+      discountCents,
+      note: `${percent}% parsed from discount name`,
+    }
+  }
+
+  const fixedDiscountCents = parseMoneyToCents(value)
+
+  if (fixedDiscountCents) {
+    return {
+      label: value,
+      discountCents: fixedDiscountCents,
+      note: 'Fixed amount parsed from discount name',
+    }
+  }
+
+  return {
+    label: value,
+    discountCents: 0,
+    note: 'Discount name found, but amount was not parseable',
+  }
+}
+
+function formatCents(cents) {
+  return formatStripeAmount(cents ?? 0, 'usd')
+}
+
+async function auditShopifyPricingRows(rows) {
+  const catalog = await loadShopifyProductCatalog()
+
+  return rows.slice(0, 500).map((row, rowIndex) => {
+    const lineItems = parseDescriptionLineItems(row.Description)
+    const auditedItems = lineItems.map((item) => {
+      const match = findBestCatalogMatch(item, catalog)
+      const unitPriceCents = match?.priceCents ?? 0
+      const lineTotalCents = unitPriceCents * item.quantity
+
+      return {
+        quantity: item.quantity,
+        name: item.name,
+        matched: Boolean(match),
+        matchScore: match?.score ?? 0,
+        productTitle: match?.productTitle ?? '',
+        variantTitle: match?.variantTitle ?? '',
+        sku: match?.sku ?? '',
+        unitPrice: match ? formatCents(unitPriceCents) : '',
+        lineTotal: match ? formatCents(lineTotalCents) : '',
+        lineTotalCents,
+      }
+    })
+    const subtotalCents = auditedItems.reduce((total, item) => total + item.lineTotalCents, 0)
+    const discount = parseDiscountAdjustment(row['Discount Name'], subtotalCents)
+    const expectedTotalCents = Math.max(0, subtotalCents - discount.discountCents)
+    const collectedCents = parseMoneyToCents(row['Total Collected']) ?? 0
+    const differenceCents = collectedCents - expectedTotalCents
+    const hasMissingMatches = auditedItems.some((item) => !item.matched)
+    const status = hasMissingMatches
+      ? 'Needs Review'
+      : Math.abs(differenceCents) <= 1
+        ? 'Match'
+        : 'Mismatch'
+
+    return {
+      rowIndex,
+      customerName: row['Customer Name'] ?? '',
+      description: row.Description ?? '',
+      discountName: row['Discount Name'] ?? '',
+      subtotal: formatCents(subtotalCents),
+      discount: discount.discountCents ? `-${formatCents(discount.discountCents)}` : '$0.00',
+      discountNote: discount.note,
+      expectedTotal: formatCents(expectedTotalCents),
+      totalCollected: formatCents(collectedCents),
+      difference: formatCents(differenceCents),
+      status,
+      items: auditedItems,
+    }
+  })
+}
+
 async function buildCallReport(selectedDate) {
   const [owners, scheduleResult, outboundCalls] = await Promise.all([
     loadOwners(),
@@ -2678,6 +2916,39 @@ const server = createServer(async (request, response) => {
         source: 'stripe',
         rows: results,
         unrecordedPayments,
+        updatedAt: new Date().toISOString(),
+      }, {
+        'Cache-Control': 'no-store',
+      })
+    } catch (error) {
+      sendJson(request, response, 500, {
+        message: error.message,
+      }, {
+        'Cache-Control': 'no-store',
+      })
+    }
+    return
+  }
+
+  if (requestUrl.pathname === '/api/shopify/pricing-audit' && request.method === 'POST') {
+    try {
+      const payload = await readJsonRequest(request)
+      const rows = Array.isArray(payload.rows) ? payload.rows.slice(0, 500) : []
+
+      if (!rows.length) {
+        sendJson(request, response, 400, {
+          message: 'Expected a rows array to audit.',
+        }, {
+          'Cache-Control': 'no-store',
+        })
+        return
+      }
+
+      const auditedRows = await auditShopifyPricingRows(rows)
+
+      sendJson(request, response, 200, {
+        source: 'shopify',
+        rows: auditedRows,
         updatedAt: new Date().toISOString(),
       }, {
         'Cache-Control': 'no-store',

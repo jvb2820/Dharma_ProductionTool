@@ -162,6 +162,8 @@
 
 .upload-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-end;
   margin: 14px 4px 0;
 }
@@ -188,6 +190,17 @@
 .verify-button:disabled {
   cursor: not-allowed;
   opacity: 0.62;
+}
+
+.verify-button.secondary {
+  color: #0a5d43;
+  background: #fff;
+}
+
+.verify-button.secondary:hover:not(:disabled),
+.verify-button.secondary:focus-visible {
+  color: #fff;
+  background: #0a5d43;
 }
 
 .verification-loader {
@@ -712,6 +725,148 @@
   border-radius: 8px;
   background: rgba(255, 254, 249, 0.96);
   box-shadow: 0 18px 44px rgba(47, 73, 57, 0.08);
+}
+
+.pricing-audit-panel {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 18px;
+  border: 1px solid rgba(0, 86, 63, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 254, 249, 0.96);
+  box-shadow: 0 18px 44px rgba(47, 73, 57, 0.08);
+}
+
+.pricing-audit-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.pricing-audit-heading h2,
+.pricing-audit-heading p {
+  margin: 0;
+}
+
+.pricing-audit-heading h2 {
+  color: #1f3428;
+  font-size: 1rem;
+}
+
+.pricing-audit-heading p {
+  color: #516f5f;
+  font-size: 0.76rem;
+  font-weight: 850;
+}
+
+.pricing-audit-heading strong {
+  color: #0a5d43;
+  font-size: 0.94rem;
+}
+
+.pricing-audit-table-shell {
+  overflow: hidden;
+  overflow-x: auto;
+  border: 1px solid rgba(0, 86, 63, 0.14);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.pricing-audit-table {
+  width: 100%;
+  min-width: 1240px;
+  border-collapse: collapse;
+}
+
+.pricing-audit-table th,
+.pricing-audit-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid rgba(0, 86, 63, 0.1);
+  color: #1f3428;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  text-align: left;
+  vertical-align: top;
+}
+
+.pricing-audit-table th {
+  color: #314a3d;
+  font-size: 0.72rem;
+  font-weight: 950;
+  text-transform: uppercase;
+  background: #f2f6ef;
+}
+
+.pricing-audit-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.pricing-audit-table td:nth-child(3),
+.pricing-audit-table td:nth-child(4),
+.pricing-audit-table td:nth-child(5),
+.pricing-audit-table td:nth-child(6),
+.pricing-audit-table td:nth-child(7) {
+  color: #0a5d43;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.pricing-audit-items summary {
+  color: #0a5d43;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.pricing-audit-items div {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pricing-audit-items p {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.pricing-audit-items strong {
+  color: #1f3428;
+}
+
+.pricing-audit-items span {
+  color: #516f5f;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.pricing-audit-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 92px;
+  min-height: 26px;
+  padding: 4px 9px;
+  border: 1px solid #c3c8c2;
+  border-radius: 999px;
+  color: #3f4f45;
+  background: #edf0eb;
+  font-size: 0.7rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.pricing-audit-status.verified {
+  border-color: #8ac184;
+  color: #0f4f26;
+  background: #dff5d8;
+}
+
+.pricing-audit-status.missing {
+  border-color: #db8d83;
+  color: #8c1f16;
+  background: #ffe1dc;
 }
 
 .unrecorded-payments-heading {

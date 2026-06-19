@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { loadPaymentHistory, savePaymentHistory } from '../services/paymentHistory'
+import { auditShopifyPricing } from '../services/shopifyPricingAudit'
 import { verifyStripePayments } from '../services/stripePaymentVerification'
 
 const tableHeaders = [
@@ -192,6 +193,8 @@ function HomeDashboard() {
   const [unrecordedPayments, setUnrecordedPayments] = useState([])
   const [hasCheckedUnrecordedPayments, setHasCheckedUnrecordedPayments] = useState(false)
   const [isVerifying, setIsVerifying] = useState(false)
+  const [isAuditingPricing, setIsAuditingPricing] = useState(false)
+  const [pricingAuditRows, setPricingAuditRows] = useState([])
   const [verificationStartedAt, setVerificationStartedAt] = useState(null)
   const [verificationTick, setVerificationTick] = useState(0)
   const [isHistoryLoading, setIsHistoryLoading] = useState(true)
@@ -313,6 +316,7 @@ function HomeDashboard() {
     setUploadMessage(`Reading ${file.name}...`)
     setUploadedFileName('')
     setUnrecordedPayments([])
+    setPricingAuditRows([])
     setHasCheckedUnrecordedPayments(false)
     setIsVerifying(false)
     setVerificationStartedAt(null)
@@ -402,6 +406,29 @@ function HomeDashboard() {
       setUploadMessage('Manual verification saved to history.')
     } catch (error) {
       setUploadMessage(error.message || 'Could not save manual verification.')
+    }
+  }
+
+  const handleAuditPricing = async () => {
+    if (!records.length || isAuditingPricing) {
+      return
+    }
+
+    setIsAuditingPricing(true)
+    setUploadMessage(`Checking Shopify pricing for ${records.length} row${records.length === 1 ? '' : 's'}...`)
+
+    try {
+      const auditResult = await auditShopifyPricing(records)
+
+      setPricingAuditRows(auditResult.rows)
+      setUploadMessage(
+        `Shopify pricing audit complete for ${auditResult.rows.length} row${auditResult.rows.length === 1 ? '' : 's'}.`,
+      )
+    } catch (error) {
+      setUploadMessage(error.message || 'Shopify pricing audit failed. Please check Shopify access and try again.')
+      console.error(error)
+    } finally {
+      setIsAuditingPricing(false)
     }
   }
 
@@ -533,6 +560,14 @@ function HomeDashboard() {
                       <button className="verify-button" type="button" onClick={handleVerifyPayments} disabled={isVerifying}>
                         {isVerifying ? 'Verifying...' : 'Verify'}
                       </button>
+                      <button
+                        className="verify-button secondary"
+                        type="button"
+                        onClick={handleAuditPricing}
+                        disabled={isAuditingPricing}
+                      >
+                        {isAuditingPricing ? 'Auditing...' : 'Audit Pricing'}
+                      </button>
                     </div>
                   ) : null}
                   {isVerifying ? (
@@ -601,6 +636,70 @@ function HomeDashboard() {
                   </article>
                 </section>
               </div>
+
+              {pricingAuditRows.length ? (
+                <section className="pricing-audit-panel" aria-label="Shopify pricing audit">
+                  <div className="pricing-audit-heading">
+                    <div>
+                      <h2>Shopify Pricing Audit</h2>
+                      <p>Product prices are matched from Shopify catalog items parsed from the description.</p>
+                    </div>
+                    <strong>{pricingAuditRows.filter((row) => row.status === 'Match').length}/{pricingAuditRows.length}</strong>
+                  </div>
+                  <div className="pricing-audit-table-shell">
+                    <table className="pricing-audit-table">
+                      <thead>
+                        <tr>
+                          <th scope="col">Customer</th>
+                          <th scope="col">Items Matched</th>
+                          <th scope="col">Subtotal</th>
+                          <th scope="col">Discount</th>
+                          <th scope="col">Expected</th>
+                          <th scope="col">Collected</th>
+                          <th scope="col">Difference</th>
+                          <th scope="col">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pricingAuditRows.map((auditRow) => (
+                          <tr key={`${auditRow.rowIndex}-${auditRow.customerName}`}>
+                            <td>{auditRow.customerName || '-'}</td>
+                            <td>
+                              <details className="pricing-audit-items">
+                                <summary>
+                                  {auditRow.items.filter((item) => item.matched).length}/{auditRow.items.length} matched
+                                </summary>
+                                <div>
+                                  {auditRow.items.map((item) => (
+                                    <p key={`${auditRow.rowIndex}-${item.quantity}-${item.name}`}>
+                                      <strong>{item.quantity}x {item.name}</strong>
+                                      <span>
+                                        {item.matched
+                                          ? `${item.productTitle}${item.variantTitle ? ` - ${item.variantTitle}` : ''} (${item.unitPrice})`
+                                          : 'No Shopify match'}
+                                      </span>
+                                    </p>
+                                  ))}
+                                </div>
+                              </details>
+                            </td>
+                            <td>{auditRow.subtotal}</td>
+                            <td title={auditRow.discountNote || ''}>{auditRow.discount}</td>
+                            <td>{auditRow.expectedTotal}</td>
+                            <td>{auditRow.totalCollected}</td>
+                            <td>{auditRow.difference}</td>
+                            <td>
+                              <span className={`pricing-audit-status ${getVerificationClass(auditRow.status === 'Match' ? 'Yes' : auditRow.status === 'Mismatch' ? 'No' : '')}`}>
+                                {auditRow.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
 
               {hasCheckedUnrecordedPayments ? (
                 <section className="unrecorded-payments-panel" aria-label="Payments not in uploaded sheet">
