@@ -25,7 +25,7 @@ const stripeVerificationCache = new Map()
 let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
-const callReportCacheVersion = 'contact-call-v5'
+const callReportCacheVersion = 'contact-call-v6'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
 const reportErrors = new Map()
@@ -1702,6 +1702,7 @@ async function loadScheduledContactsForDate(selectedDate) {
       'hs_meeting_body',
       'hs_meeting_outcome',
       'hs_meeting_external_url',
+      'hs_createdate',
       'createdate',
       'hubspot_owner_id',
       'hs_attendee_owner_ids',
@@ -2307,13 +2308,15 @@ async function buildCallReport(selectedDate) {
       const scheduledAt = new Date(
         properties.hs_meeting_start_time ?? properties.hs_timestamp,
       )
-      const createdAt = properties.createdate ? new Date(properties.createdate) : scheduledAt
+      const createdAt = properties.hs_createdate || properties.createdate
+        ? new Date(properties.hs_createdate ?? properties.createdate)
+        : null
 
       return {
         rowId: meeting.id,
         meetingName: properties.hs_meeting_title || 'Meeting',
         meetingDescription: stripHtml(properties.hs_meeting_body),
-        date: displayDate(createdAt),
+        date: displayDate(scheduledAt),
         reportDate: scheduleResult.reportDate,
         time: displayTime(scheduledAt),
         createdAt: createdAt?.toISOString() ?? null,
