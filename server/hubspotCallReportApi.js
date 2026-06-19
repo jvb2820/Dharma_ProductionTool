@@ -2,6 +2,7 @@ import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { productPriceCatalog } from './productPriceCatalog.js'
 
 loadLocalEnv()
 
@@ -23,7 +24,6 @@ const trackingCache = new Map()
 const uspsTrackingCache = new Map()
 const stripeVerificationCache = new Map()
 let sheetStatusCache = null
-let shopifyProductCatalogCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
 const callReportCacheVersion = 'contact-call-v6'
@@ -2466,71 +2466,6 @@ async function verifyStripePaymentRows(rows) {
   return results
 }
 
-async function loadShopifyProductCatalog(options = {}) {
-  if (
-    !options.forceRefresh
-    && shopifyProductCatalogCache
-    && Date.now() - shopifyProductCatalogCache.cachedAt < currentDateCacheTtlMs
-  ) {
-    return shopifyProductCatalogCache.products
-  }
-
-  const products = []
-  let pageInfo = ''
-  let pageCount = 0
-
-  do {
-    const params = pageInfo
-      ? { limit: 250, page_info: pageInfo }
-      : {
-        limit: 250,
-        status: 'active',
-        fields: 'id,title,product_type,status,tags,variants',
-      }
-    const { payload, nextPageInfo } = await shopifyFetch('/products.json', params)
-
-    products.push(...(payload.products ?? []))
-    pageInfo = nextPageInfo ?? ''
-    pageCount += 1
-  } while (pageInfo && pageCount < 20)
-
-  const catalog = products.flatMap((product) =>
-    (product.variants ?? []).map((variant) => {
-      const productTitle = product.title ?? ''
-      const variantTitle = variant.title === 'Default Title' ? '' : variant.title ?? ''
-      const searchableText = [
-        productTitle,
-        variantTitle,
-        variant.sku,
-        product.product_type,
-        product.tags,
-      ].filter(Boolean).join(' ')
-
-      return {
-        productId: product.id,
-        variantId: variant.id,
-        productTitle,
-        variantTitle,
-        sku: variant.sku ?? '',
-        productType: product.product_type ?? '',
-        tags: product.tags ?? '',
-        price: variant.price ?? '',
-        priceCents: parseMoneyToCents(variant.price),
-        searchableText,
-        normalizedText: normalizeMatchText(searchableText),
-        words: new Set(readPricingWords(searchableText)),
-      }
-    }),
-  )
-
-  shopifyProductCatalogCache = {
-    cachedAt: Date.now(),
-    products: catalog,
-  }
-
-  return catalog
-}
-
 function parseDescriptionLineItems(description) {
   const text = String(description ?? '').trim()
   if (!text) return []
@@ -2557,14 +2492,59 @@ function readPricingWords(value) {
     .filter((word) => word.length >= 3)
 }
 
+function normalizePricingText(value) {
+  return normalizeMatchText(value)
+    .replace(/\bcompounded\b/g, ' ')
+    .replace(/\bcapsules\b/g, ' capsule ')
+    .replace(/\binjection\b/g, ' ')
+    .replace(/\bpersonalized\b/g, ' ')
+    .replace(/\bnutrition\b/g, 'nutrition')
+    .replace(/\bslim\s+boost\b/g, 'slimboost')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function readDurationMonths(value) {
+  const text = normalizeMatchText(value)
+
+  if (/\b(?:one|1)\s+month\b/.test(text)) return 1
+  if (/\b(?:two|2)\s+months?\b/.test(text)) return 2
+  if (/\b(?:three|3)\s+months?\b/.test(text)) return 3
+  if (/\b(?:four|4)\s+months?\b/.test(text)) return 4
+  if (/\b(?:six|6)\s+months?\b/.test(text)) return 6
+  if (/\b(?:twelve|12)\s+months?\b/.test(text)) return 12
+
+  return null
+}
+
+function getProductPricingCatalog() {
+  return productPriceCatalog.map((product, index) => ({
+    productId: `local-${index}`,
+    variantId: `local-${index}`,
+    productTitle: product.name,
+    variantTitle: '',
+    sku: '',
+    productType: 'Local price catalog',
+    tags: '',
+    price: String(product.price),
+    priceCents: parseMoneyToCents(product.price),
+    searchableText: product.name,
+    normalizedText: normalizePricingText(product.name),
+    words: new Set(readPricingWords(normalizePricingText(product.name))),
+  }))
+}
+
 function scoreCatalogMatch(item, catalogItem) {
-  const itemText = normalizeMatchText(item.name)
-  const itemWords = readPricingWords(item.name)
+  const rawItemText = normalizeMatchText(item.name)
+  const itemText = normalizePricingText(item.name)
+  const itemWords = readPricingWords(itemText)
 
   if (!itemText || itemWords.length === 0) return 0
 
   let score = 0
-  const productTitleText = normalizeMatchText(catalogItem.productTitle)
+  const productTitleText = normalizePricingText(catalogItem.productTitle)
+  const catalogDurationMonths = readDurationMonths(catalogItem.productTitle)
+  const itemDurationMonths = readDurationMonths(item.name)
 
   if (catalogItem.normalizedText.includes(itemText)) score += 120
   if (productTitleText && itemText.includes(productTitleText)) score += 80
@@ -2574,11 +2554,25 @@ function scoreCatalogMatch(item, catalogItem) {
   })
 
   const itemDose = itemText.match(/\b\d+\s*(?:mg|ml|iu)\b/i)?.[0]
-  if (itemDose && catalogItem.normalizedText.includes(normalizeMatchText(itemDose))) score += 35
+  if (itemDose && catalogItem.normalizedText.includes(normalizePricingText(itemDose))) score += 35
 
   ;['nad', 'glp', 'b12'].forEach((term) => {
     if (itemWords.includes(term) && catalogItem.words.has(term)) score += 30
   })
+
+  if (itemDurationMonths && catalogDurationMonths === itemDurationMonths) score += 90
+  if (catalogDurationMonths && itemDurationMonths && catalogDurationMonths !== itemDurationMonths) score -= 120
+  if (catalogDurationMonths && !itemDurationMonths && catalogDurationMonths > 1) score -= 80
+  if (catalogDurationMonths === 1 && !itemDurationMonths) score += 18
+
+  if (rawItemText.includes('capsule')) {
+    if (catalogItem.normalizedText.includes('cellular') || catalogItem.normalizedText.includes('anti aging')) {
+      score += 90
+    }
+    if (catalogDurationMonths) {
+      score -= 110
+    }
+  }
 
   if (itemText.includes('compounded') && catalogItem.normalizedText.includes('compounded')) score += 15
   if (itemText.includes('consultation') && catalogItem.normalizedText.includes('consultation')) score += 20
@@ -2652,7 +2646,7 @@ function formatCents(cents) {
 }
 
 async function auditShopifyPricingRows(rows) {
-  const catalog = await loadShopifyProductCatalog()
+  const catalog = getProductPricingCatalog()
 
   return rows.slice(0, 500).map((row, rowIndex) => {
     const lineItems = parseDescriptionLineItems(row.Description)
@@ -2930,7 +2924,10 @@ const server = createServer(async (request, response) => {
     return
   }
 
-  if (requestUrl.pathname === '/api/shopify/pricing-audit' && request.method === 'POST') {
+  if (
+    (requestUrl.pathname === '/api/pricing-audit' || requestUrl.pathname === '/api/shopify/pricing-audit')
+    && request.method === 'POST'
+  ) {
     try {
       const payload = await readJsonRequest(request)
       const rows = Array.isArray(payload.rows) ? payload.rows.slice(0, 500) : []
@@ -2947,7 +2944,7 @@ const server = createServer(async (request, response) => {
       const auditedRows = await auditShopifyPricingRows(rows)
 
       sendJson(request, response, 200, {
-        source: 'shopify',
+        source: 'local-price-catalog',
         rows: auditedRows,
         updatedAt: new Date().toISOString(),
       }, {

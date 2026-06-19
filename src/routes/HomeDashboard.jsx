@@ -415,17 +415,17 @@ function HomeDashboard() {
     }
 
     setIsAuditingPricing(true)
-    setUploadMessage(`Checking Shopify pricing for ${records.length} row${records.length === 1 ? '' : 's'}...`)
+    setUploadMessage(`Checking product pricing for ${records.length} row${records.length === 1 ? '' : 's'}...`)
 
     try {
       const auditResult = await auditShopifyPricing(records)
 
       setPricingAuditRows(auditResult.rows)
       setUploadMessage(
-        `Shopify pricing audit complete for ${auditResult.rows.length} row${auditResult.rows.length === 1 ? '' : 's'}.`,
+        `Product pricing audit complete for ${auditResult.rows.length} row${auditResult.rows.length === 1 ? '' : 's'}.`,
       )
     } catch (error) {
-      setUploadMessage(error.message || 'Shopify pricing audit failed. Please check Shopify access and try again.')
+      setUploadMessage(error.message || 'Product pricing audit failed. Please try again.')
       console.error(error)
     } finally {
       setIsAuditingPricing(false)
@@ -638,11 +638,11 @@ function HomeDashboard() {
               </div>
 
               {pricingAuditRows.length ? (
-                <section className="pricing-audit-panel" aria-label="Shopify pricing audit">
+                <section className="pricing-audit-panel" aria-label="Product pricing audit">
                   <div className="pricing-audit-heading">
                     <div>
-                      <h2>Shopify Pricing Audit</h2>
-                      <p>Product prices are matched from Shopify catalog items parsed from the description.</p>
+                      <h2>Product Pricing Audit</h2>
+                      <p>Product prices are matched from the local price catalog items parsed from the description.</p>
                     </div>
                     <strong>{pricingAuditRows.filter((row) => row.status === 'Match').length}/{pricingAuditRows.length}</strong>
                   </div>
