@@ -367,7 +367,7 @@ function HubSpotCallReport() {
         calledDetail: callerName
           ? row.calledDetail || 'Outbound caller found before the appointment'
           : outboundExempt
-            ? row.calledDetail || 'Outbound call not required: meeting was created within 1 hour of the appointment'
+            ? row.calledDetail || 'Outbound call not required: meeting was created within 2 hours of the appointment'
             : row.calledDetail || 'No qualifying outbound call found',
         confirmation: cancelled ? 'Not Confirmed' : 'Confirmed',
         confirmationDetail: cancelled

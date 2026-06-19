@@ -26,7 +26,7 @@ const stripeVerificationCache = new Map()
 let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
-const callReportCacheVersion = 'contact-call-v6'
+const callReportCacheVersion = 'contact-call-v7'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
 const reportErrors = new Map()
@@ -1925,7 +1925,7 @@ function findPriorOutboundCall(meeting, calls, options = {}) {
   return getPriorOutboundCalls(meeting, calls, options)[0]
 }
 
-function isCreatedWithinOneHourOfAppointment(createdAt, scheduledAt) {
+function isCreatedWithinTwoHoursOfAppointment(createdAt, scheduledAt) {
   if (!createdAt || !scheduledAt) return false
 
   const createdTime = new Date(createdAt)
@@ -1935,7 +1935,7 @@ function isCreatedWithinOneHourOfAppointment(createdAt, scheduledAt) {
 
   const millisecondsUntilAppointment = scheduledTime.getTime() - createdTime.getTime()
 
-  return millisecondsUntilAppointment >= 0 && millisecondsUntilAppointment <= 60 * 60 * 1000
+  return Math.abs(millisecondsUntilAppointment) <= 2 * 60 * 60 * 1000
 }
 
 function getPreviousDayOutboundCalls(meeting, calls, options = {}) {
@@ -2978,7 +2978,7 @@ async function buildCallReport(selectedDate) {
         : previousDayFallbackCalls
       const previousDayCall = previousDayCalls[0]
       const appointmentCancelled = isCancelledMeeting(row.meetingName)
-      const outboundExempt = isCreatedWithinOneHourOfAppointment(row.createdAt, row.scheduledAt)
+      const outboundExempt = isCreatedWithinTwoHoursOfAppointment(row.createdAt, row.scheduledAt)
 
       return {
         ...row,
@@ -2993,7 +2993,7 @@ async function buildCallReport(selectedDate) {
         calledDetail: matchingCall
           ? `${contactTimelineCall ? 'Contact timeline' : 'Matched'} ${matchingCall.disposition || 'outbound call'} at ${displayTime(matchingCall.callTime)}`
           : outboundExempt
-            ? 'Outbound call not required: meeting was created within 1 hour of the appointment'
+            ? 'Outbound call not required: meeting was created within 2 hours of the appointment'
             : 'No same-day outbound call found before the appointment',
         outboundExempt,
         confirmation: appointmentCancelled ? 'Not Confirmed' : 'Confirmed',
