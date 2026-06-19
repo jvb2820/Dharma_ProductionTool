@@ -547,23 +547,31 @@ function HomeDashboard() {
                     <strong>{unrecordedPayments.length}</strong>
                   </div>
                   {unrecordedPayments.length ? (
-                    <div className="unrecorded-payments-list">
-                      {unrecordedPayments.map((payment) => (
-                        <article className="unrecorded-payment-item" key={payment.id}>
-                          <div>
-                            <strong>{payment.amount}</strong>
-                            <span>{payment.paymentDate}</span>
-                          </div>
-                          <div>
-                            <span>{payment.customerName || payment.customerEmail || 'No customer details'}</span>
-                            <small>{payment.description || payment.id}</small>
-                          </div>
-                          <div>
-                            <span>{payment.createdAt || '-'}</span>
-                            <small>{payment.id}</small>
-                          </div>
-                        </article>
-                      ))}
+                    <div className="unrecorded-payments-table-shell">
+                      <table className="unrecorded-payments-table">
+                        <thead>
+                          <tr>
+                            <th scope="col">Email</th>
+                            <th scope="col">Name</th>
+                            <th scope="col">Phone Number</th>
+                            <th scope="col">Price</th>
+                            <th scope="col">Date</th>
+                            <th scope="col">State</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {unrecordedPayments.map((payment) => (
+                            <tr key={payment.id}>
+                              <td>{payment.customerEmail || '-'}</td>
+                              <td>{payment.customerName || '-'}</td>
+                              <td>{payment.customerPhone || '-'}</td>
+                              <td>{payment.amount || '-'}</td>
+                              <td>{payment.createdAt || payment.paymentDate || '-'}</td>
+                              <td>{payment.customerState || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   ) : (
                     <p className="unrecorded-payments-empty">

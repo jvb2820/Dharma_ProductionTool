@@ -2176,6 +2176,8 @@ function formatStripeCreatedAt(created) {
 }
 
 function normalizeStripeChargeForUnrecorded(charge, paymentDate) {
+  const customer = typeof charge.customer === 'object' && charge.customer !== null ? charge.customer : null
+
   return {
     id: charge.id,
     paymentDate,
@@ -2184,7 +2186,9 @@ function normalizeStripeChargeForUnrecorded(charge, paymentDate) {
     currency: String(charge.currency ?? 'usd').toUpperCase(),
     createdAt: formatStripeCreatedAt(charge.created),
     customerName: charge.billing_details?.name ?? '',
-    customerEmail: charge.billing_details?.email ?? charge.receipt_email ?? '',
+    customerEmail: charge.billing_details?.email ?? charge.receipt_email ?? customer?.email ?? '',
+    customerPhone: charge.billing_details?.phone ?? customer?.phone ?? '',
+    customerState: charge.billing_details?.address?.state ?? '',
     description: charge.description ?? '',
     status: charge.status ?? '',
   }
@@ -2205,8 +2209,125 @@ function countUploadedPaymentAmountsByDate(rows) {
   }, new Map())
 }
 
+function countUploadedPaymentAmountsByDateAndEmail(rows) {
+  return rows.reduce((lookup, row) => {
+    const dateRange = parsePaymentDateRange(row.Date)
+    const amountCents = parseMoneyToCents(row['Total Collected'])
+    const rowEmails = getUploadedRowEmails(row)
+
+    if (!dateRange?.date || !amountCents || rowEmails.length === 0) return lookup
+
+    const emailAmounts = lookup.get(dateRange.date) ?? new Map()
+
+    rowEmails.forEach((email) => {
+      const amountCounts = emailAmounts.get(email) ?? new Map()
+      amountCounts.set(amountCents, (amountCounts.get(amountCents) ?? 0) + 1)
+      emailAmounts.set(email, amountCounts)
+    })
+
+    lookup.set(dateRange.date, emailAmounts)
+
+    return lookup
+  }, new Map())
+}
+
+function useUploadedAmountCount(amountCounts, amountCents) {
+  const remainingUploadedCount = amountCounts?.get(amountCents) ?? 0
+
+  if (remainingUploadedCount <= 0) return false
+
+  amountCounts.set(amountCents, remainingUploadedCount - 1)
+  return true
+}
+
+function findChargeSubsetIndexesForAmount(charges, targetAmountCents) {
+  if (targetAmountCents <= 0 || charges.length === 0 || charges.length > 16) return null
+
+  const indexedCharges = charges
+    .map((charge, index) => ({ charge, index }))
+    .sort((left, right) => (right.charge.amount ?? 0) - (left.charge.amount ?? 0))
+
+  function search(startIndex, remainingAmount, selectedIndexes) {
+    if (remainingAmount === 0) return selectedIndexes
+    if (remainingAmount < 0) return null
+
+    for (let index = startIndex; index < indexedCharges.length; index += 1) {
+      const current = indexedCharges[index]
+      const result = search(index + 1, remainingAmount - (current.charge.amount ?? 0), [
+        ...selectedIndexes,
+        current.index,
+      ])
+
+      if (result) return result
+    }
+
+    return null
+  }
+
+  return search(0, targetAmountCents, [])
+}
+
+function filterChargesMatchedByUploadedEmailTotals(charges, uploadedAmountCountsByEmail) {
+  const chargesByEmail = charges.reduce((lookup, charge) => {
+    const email = getStripeChargeEmails(charge)[0]
+
+    if (!email) return lookup
+
+    const emailCharges = lookup.get(email) ?? []
+    emailCharges.push(charge)
+    lookup.set(email, emailCharges)
+
+    return lookup
+  }, new Map())
+  const matchedChargeIds = new Set()
+
+  chargesByEmail.forEach((emailCharges, email) => {
+    const uploadedAmountCounts = uploadedAmountCountsByEmail.get(email)
+    if (!uploadedAmountCounts) return
+
+    const unmatchedEmailCharges = [...emailCharges]
+
+    uploadedAmountCounts.forEach((count, uploadedAmountCents) => {
+      for (let index = 0; index < count; index += 1) {
+        const matchedIndexes = findChargeSubsetIndexesForAmount(unmatchedEmailCharges, uploadedAmountCents)
+
+        if (!matchedIndexes) break
+
+        matchedIndexes
+          .sort((left, right) => right - left)
+          .forEach((matchedIndex) => {
+            const [matchedCharge] = unmatchedEmailCharges.splice(matchedIndex, 1)
+            if (matchedCharge?.id) {
+              matchedChargeIds.add(matchedCharge.id)
+            }
+          })
+      }
+    })
+  })
+
+  return charges.filter((charge) => !matchedChargeIds.has(charge.id))
+}
+
+function findStripeChargesMatchingUploadedEmailTotal(row, charges, amountCents) {
+  const rowEmails = getUploadedRowEmails(row)
+
+  if (rowEmails.length === 0) return []
+
+  for (const rowEmail of rowEmails) {
+    const emailCharges = charges.filter((charge) => getStripeChargeEmails(charge).includes(rowEmail))
+    const matchedIndexes = findChargeSubsetIndexesForAmount(emailCharges, amountCents)
+
+    if (matchedIndexes) {
+      return matchedIndexes.map((index) => emailCharges[index])
+    }
+  }
+
+  return []
+}
+
 async function findStripePaymentsNotInSheet(rows) {
   const uploadedAmountsByDate = countUploadedPaymentAmountsByDate(rows)
+  const uploadedEmailAmountsByDate = countUploadedPaymentAmountsByDateAndEmail(rows)
   const unrecordedPayments = []
 
   for (const [paymentDate, amountCounts] of uploadedAmountsByDate) {
@@ -2214,15 +2335,27 @@ async function findStripePaymentsNotInSheet(rows) {
     if (!dateRange) continue
 
     const stripeCharges = await listStripeChargesForDateRange(dateRange)
+    const unmatchedCharges = []
 
     stripeCharges.forEach((charge) => {
-      const remainingUploadedCount = amountCounts.get(charge.amount) ?? 0
+      if (useUploadedAmountCount(amountCounts, charge.amount)) {
+        const chargeEmail = getStripeChargeEmails(charge)[0]
+        const uploadedAmountCountsForEmail = uploadedEmailAmountsByDate.get(paymentDate)?.get(chargeEmail)
 
-      if (remainingUploadedCount > 0) {
-        amountCounts.set(charge.amount, remainingUploadedCount - 1)
+        useUploadedAmountCount(uploadedAmountCountsForEmail, charge.amount)
         return
       }
 
+      unmatchedCharges.push(charge)
+    })
+
+    const uploadedAmountCountsByEmail = uploadedEmailAmountsByDate.get(paymentDate) ?? new Map()
+    const remainingUnmatchedCharges = filterChargesMatchedByUploadedEmailTotals(
+      unmatchedCharges,
+      uploadedAmountCountsByEmail,
+    )
+
+    remainingUnmatchedCharges.forEach((charge) => {
       unrecordedPayments.push(normalizeStripeChargeForUnrecorded(charge, paymentDate))
     })
   }
@@ -2249,9 +2382,19 @@ async function verifyStripePaymentRow(row) {
 
   const charges = await listStripeChargesForRow(row, amountCents)
   const matchedCharge = charges.find((charge) => stripeChargeMatchesUploadedCustomer(charge, row))
+  const dateRange = parsePaymentDateRange(row.Date)
+  const matchedSplitCharges = matchedCharge
+    ? []
+    : !dateRange
+      ? []
+    : findStripeChargesMatchingUploadedEmailTotal(
+      row,
+      await listStripeChargesForDateRange(dateRange),
+      amountCents,
+    )
   const result = {
-    verification: matchedCharge ? 'Yes' : 'No',
-    matchedChargeId: matchedCharge?.id ?? '',
+    verification: matchedCharge || matchedSplitCharges.length > 0 ? 'Yes' : 'No',
+    matchedChargeId: matchedCharge?.id ?? matchedSplitCharges.map((charge) => charge.id).join(','),
   }
 
   stripeVerificationCache.set(cacheKey, {

@@ -685,7 +685,6 @@
 }
 
 .unrecorded-payments-heading p,
-.unrecorded-payment-item small,
 .unrecorded-payments-empty {
   color: #516f5f;
   font-size: 0.76rem;
@@ -703,46 +702,64 @@
   background: #ffe1dc;
 }
 
-.unrecorded-payments-list {
-  display: grid;
-  gap: 8px;
-}
-
-.unrecorded-payment-item {
-  display: grid;
-  grid-template-columns: 130px minmax(0, 1fr) minmax(180px, 0.7fr);
-  gap: 14px;
-  align-items: center;
-  padding: 12px;
-  border: 1px solid rgba(0, 86, 63, 0.12);
+.unrecorded-payments-table-shell {
+  overflow: hidden;
+  overflow-x: auto;
+  border: 1px solid rgba(0, 86, 63, 0.14);
   border-radius: 8px;
   background: #fff;
 }
 
-.unrecorded-payment-item div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
+.unrecorded-payments-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
 }
 
-.unrecorded-payment-item strong {
+.unrecorded-payments-table th,
+.unrecorded-payments-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid rgba(0, 86, 63, 0.1);
   color: #1f3428;
-  font-size: 1rem;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  text-align: left;
+  vertical-align: middle;
 }
 
-.unrecorded-payment-item span {
-  overflow: hidden;
-  color: #0a5d43;
-  font-size: 0.82rem;
+.unrecorded-payments-table th {
+  color: #314a3d;
+  font-size: 0.72rem;
   font-weight: 950;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-transform: uppercase;
+  background: #f2f6ef;
 }
 
-.unrecorded-payment-item small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.unrecorded-payments-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.unrecorded-payments-table td {
+  font-weight: 850;
+}
+
+.unrecorded-payments-table td:nth-child(4),
+.unrecorded-payments-table td:nth-child(5),
+.unrecorded-payments-table td:nth-child(6) {
+  color: #0a5d43;
+  font-weight: 950;
+}
+
+.unrecorded-payments-table th:nth-child(4),
+.unrecorded-payments-table td:nth-child(4) {
+  width: 110px;
+  text-align: right;
+}
+
+.unrecorded-payments-table th:nth-child(6),
+.unrecorded-payments-table td:nth-child(6) {
+  width: 90px;
+  text-align: center;
 }
 
 .unrecorded-payments-empty {
