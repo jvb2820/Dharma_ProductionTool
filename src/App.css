@@ -250,6 +250,11 @@
   transition: width 350ms ease;
 }
 
+.verification-loader-bar.auditing span {
+  width: 42%;
+  animation: pricing-audit-sweep 1.2s ease-in-out infinite alternate;
+}
+
 .upload-message {
   margin: 12px 4px 0;
   color: var(--muted);
@@ -877,6 +882,169 @@
   border-color: #db8d83;
   color: #8c1f16;
   background: #ffe1dc;
+}
+
+.description-audit-button {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.description-audit-button:hover,
+.description-audit-button:focus-visible {
+  color: #0a5d43;
+  text-decoration: underline;
+  outline: none;
+}
+
+.pricing-audit-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(22, 20, 15, 0.42);
+}
+
+.pricing-audit-modal {
+  width: min(760px, 100%);
+  max-height: min(780px, 90vh);
+  overflow: auto;
+  border: 1px solid rgba(0, 86, 63, 0.18);
+  border-radius: 8px;
+  background: #fffef9;
+  box-shadow: 0 24px 70px rgba(22, 20, 15, 0.28);
+}
+
+.pricing-audit-modal-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px;
+  border-bottom: 1px solid rgba(0, 86, 63, 0.12);
+}
+
+.pricing-audit-modal-heading h2,
+.pricing-audit-modal-heading p {
+  margin: 0;
+}
+
+.pricing-audit-modal-heading h2 {
+  color: #1f3428;
+  font-size: 1.05rem;
+}
+
+.pricing-audit-modal-heading p {
+  margin-top: 3px;
+  color: #516f5f;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.pricing-audit-modal-heading button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(0, 86, 63, 0.18);
+  border-radius: 999px;
+  color: #1f3428;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1.2rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.pricing-audit-modal-items {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+}
+
+.pricing-audit-modal-items article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(0, 86, 63, 0.1);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.pricing-audit-modal-items article > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pricing-audit-modal-items article > div:last-child {
+  justify-items: end;
+}
+
+.pricing-audit-modal-items strong {
+  color: #1f3428;
+  font-size: 0.84rem;
+}
+
+.pricing-audit-modal-items span {
+  color: #516f5f;
+  font-size: 0.74rem;
+  font-weight: 850;
+}
+
+.pricing-audit-modal-items article > div:last-child strong {
+  color: #0a5d43;
+}
+
+.pricing-audit-modal-summary {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0 18px 18px;
+}
+
+.pricing-audit-modal-summary div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid rgba(0, 86, 63, 0.1);
+}
+
+.pricing-audit-modal-summary dt {
+  color: #516f5f;
+  font-size: 0.74rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.pricing-audit-modal-summary dd {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  margin: 0;
+  color: #0a5d43;
+  font-size: 0.86rem;
+  font-weight: 950;
+}
+
+.pricing-audit-modal-summary small {
+  max-width: 260px;
+  color: #516f5f;
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-align: right;
 }
 
 .unrecorded-payments-heading {
@@ -2524,6 +2692,16 @@
 
   to {
     transform: translateX(40px);
+  }
+}
+
+@keyframes pricing-audit-sweep {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(140%);
   }
 }
 

@@ -195,6 +195,7 @@ function HomeDashboard() {
   const [isVerifying, setIsVerifying] = useState(false)
   const [isAuditingPricing, setIsAuditingPricing] = useState(false)
   const [pricingAuditRows, setPricingAuditRows] = useState([])
+  const [selectedPricingAuditRow, setSelectedPricingAuditRow] = useState(null)
   const [verificationStartedAt, setVerificationStartedAt] = useState(null)
   const [verificationTick, setVerificationTick] = useState(0)
   const [isHistoryLoading, setIsHistoryLoading] = useState(true)
@@ -317,6 +318,7 @@ function HomeDashboard() {
     setUploadedFileName('')
     setUnrecordedPayments([])
     setPricingAuditRows([])
+    setSelectedPricingAuditRow(null)
     setHasCheckedUnrecordedPayments(false)
     setIsVerifying(false)
     setVerificationStartedAt(null)
@@ -352,7 +354,7 @@ function HomeDashboard() {
   }
 
   const handleVerifyPayments = async () => {
-    if (!records.length || isVerifying) {
+    if (!records.length || isVerifying || isAuditingPricing) {
       return
     }
 
@@ -378,14 +380,30 @@ function HomeDashboard() {
       setHistoryRecords(historyRows)
       setUnrecordedPayments(verificationResult.unrecordedPayments)
       setHasCheckedUnrecordedPayments(true)
-      setUploadMessage(
-        `Stripe verification complete for ${verifiedRecords.length} row${verifiedRecords.length === 1 ? '' : 's'}${uploadedFileName ? ` from ${uploadedFileName}` : ''}.`,
-      )
+      setIsVerifying(false)
+      setVerificationStartedAt(null)
+      setIsAuditingPricing(true)
+      setUploadMessage(`Stripe verification complete. Checking product pricing for ${verifiedRecords.length} row${verifiedRecords.length === 1 ? '' : 's'}...`)
+
+      try {
+        const auditResult = await auditShopifyPricing(verifiedRecords)
+
+        setPricingAuditRows(auditResult.rows)
+        setUploadMessage(
+          `Stripe verification and product pricing audit complete for ${verifiedRecords.length} row${verifiedRecords.length === 1 ? '' : 's'}${uploadedFileName ? ` from ${uploadedFileName}` : ''}.`,
+        )
+      } catch (pricingError) {
+        setUploadMessage(
+          `Stripe verification complete, but product pricing audit failed: ${pricingError.message || 'Please try again.'}`,
+        )
+        console.error(pricingError)
+      }
     } catch (error) {
       setUploadMessage(error.message || 'Stripe verification failed. Please check the Stripe key and try again.')
       console.error(error)
     } finally {
       setIsVerifying(false)
+      setIsAuditingPricing(false)
       setVerificationStartedAt(null)
     }
   }
@@ -406,29 +424,6 @@ function HomeDashboard() {
       setUploadMessage('Manual verification saved to history.')
     } catch (error) {
       setUploadMessage(error.message || 'Could not save manual verification.')
-    }
-  }
-
-  const handleAuditPricing = async () => {
-    if (!records.length || isAuditingPricing) {
-      return
-    }
-
-    setIsAuditingPricing(true)
-    setUploadMessage(`Checking product pricing for ${records.length} row${records.length === 1 ? '' : 's'}...`)
-
-    try {
-      const auditResult = await auditShopifyPricing(records)
-
-      setPricingAuditRows(auditResult.rows)
-      setUploadMessage(
-        `Product pricing audit complete for ${auditResult.rows.length} row${auditResult.rows.length === 1 ? '' : 's'}.`,
-      )
-    } catch (error) {
-      setUploadMessage(error.message || 'Product pricing audit failed. Please try again.')
-      console.error(error)
-    } finally {
-      setIsAuditingPricing(false)
     }
   }
 
@@ -557,16 +552,8 @@ function HomeDashboard() {
                   <input id="client-file-upload" type="file" accept=".csv,.xls,.xlsx" onChange={handleFileUpload} />
                   {records.length ? (
                     <div className="upload-actions">
-                      <button className="verify-button" type="button" onClick={handleVerifyPayments} disabled={isVerifying}>
-                        {isVerifying ? 'Verifying...' : 'Verify'}
-                      </button>
-                      <button
-                        className="verify-button secondary"
-                        type="button"
-                        onClick={handleAuditPricing}
-                        disabled={isAuditingPricing}
-                      >
-                        {isAuditingPricing ? 'Auditing...' : 'Audit Pricing'}
+                      <button className="verify-button" type="button" onClick={handleVerifyPayments} disabled={isVerifying || isAuditingPricing}>
+                        {isVerifying ? 'Verifying...' : isAuditingPricing ? 'Auditing...' : 'Verify'}
                       </button>
                     </div>
                   ) : null}
@@ -582,6 +569,21 @@ function HomeDashboard() {
                       <div className="verification-loader-meta">
                         <span>Elapsed {formatDuration(verificationProgress.elapsedMs)}</span>
                         <span>ETA {formatDuration(verificationProgress.remainingMs)}</span>
+                      </div>
+                    </div>
+                  ) : null}
+                  {isAuditingPricing ? (
+                    <div className="verification-loader" role="status" aria-live="polite">
+                      <div className="verification-loader-heading">
+                        <span>Auditing product prices</span>
+                        <strong>Pricing</strong>
+                      </div>
+                      <div className="verification-loader-bar auditing" aria-hidden="true">
+                        <span />
+                      </div>
+                      <div className="verification-loader-meta">
+                        <span>Matching descriptions to catalog</span>
+                        <span>Checking discounts</span>
                       </div>
                     </div>
                   ) : null}
@@ -636,75 +638,6 @@ function HomeDashboard() {
                   </article>
                 </section>
               </div>
-
-              {pricingAuditRows.length ? (
-                <section className="pricing-audit-panel" aria-label="Product pricing audit">
-                  <div className="pricing-audit-heading">
-                    <div>
-                      <h2>Product Pricing Audit</h2>
-                      <p>Product prices are matched from the local price catalog items parsed from the description.</p>
-                    </div>
-                    <strong>{pricingAuditRows.filter((row) => row.status === 'Match').length}/{pricingAuditRows.length}</strong>
-                  </div>
-                  <div className="pricing-audit-table-shell">
-                    <table className="pricing-audit-table">
-                      <thead>
-                        <tr>
-                          <th scope="col">Customer</th>
-                          <th scope="col">Items Matched</th>
-                          <th scope="col">Subtotal</th>
-                          <th scope="col">Discount</th>
-                          <th scope="col">Expected</th>
-                          <th scope="col">Collected</th>
-                          <th scope="col">Difference</th>
-                          <th scope="col">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {pricingAuditRows.map((auditRow) => (
-                          <tr key={`${auditRow.rowIndex}-${auditRow.customerName}`}>
-                            <td>{auditRow.customerName || '-'}</td>
-                            <td>
-                              <details className="pricing-audit-items">
-                                <summary>
-                                  {auditRow.items.filter((item) => item.matched).length}/{auditRow.items.length} matched
-                                </summary>
-                                <div>
-                                  {auditRow.items.map((item) => (
-                                    <p key={`${auditRow.rowIndex}-${item.quantity}-${item.name}`}>
-                                      <strong>{item.quantity}x {item.name}</strong>
-                                      <span>
-                                        {item.matched
-                                          ? `${item.productTitle}${item.variantTitle ? ` - ${item.variantTitle}` : ''} (${item.unitPrice})`
-                                          : 'No Shopify match'}
-                                      </span>
-                                    </p>
-                                  ))}
-                                </div>
-                              </details>
-                            </td>
-                            <td>{auditRow.subtotal}</td>
-                            <td title={auditRow.discountNote || ''}>
-                              <span>{auditRow.discount}</span>
-                              {auditRow.discountNote ? (
-                                <small className="pricing-audit-discount-note">{auditRow.discountNote}</small>
-                              ) : null}
-                            </td>
-                            <td>{auditRow.expectedTotal}</td>
-                            <td>{auditRow.totalCollected}</td>
-                            <td>{auditRow.difference}</td>
-                            <td>
-                              <span className={`pricing-audit-status ${getVerificationClass(auditRow.status === 'Match' ? 'Yes' : auditRow.status === 'Mismatch' ? 'No' : '')}`}>
-                                {auditRow.status}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-              ) : null}
 
               {hasCheckedUnrecordedPayments ? (
                 <section className="unrecorded-payments-panel" aria-label="Payments not in uploaded sheet">
@@ -803,6 +736,14 @@ function HomeDashboard() {
                                     <option value="Yes">Yes</option>
                                     <option value="No">No</option>
                                   </select>
+                                ) : header === 'Description' && pricingAuditRows[rowIndex] ? (
+                                  <button
+                                    className="description-audit-button"
+                                    type="button"
+                                    onClick={() => setSelectedPricingAuditRow(pricingAuditRows[rowIndex])}
+                                  >
+                                    {record[header] || '-'}
+                                  </button>
                                 ) : (
                                   record[header] || '-'
                                 )}
@@ -938,6 +879,80 @@ function HomeDashboard() {
           )}
         </div>
       </div>
+      {selectedPricingAuditRow ? (
+        <div className="pricing-audit-modal-backdrop" role="presentation" onClick={() => setSelectedPricingAuditRow(null)}>
+          <section
+            className="pricing-audit-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pricing-audit-modal-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="pricing-audit-modal-heading">
+              <div>
+                <h2 id="pricing-audit-modal-title">Pricing Details</h2>
+                <p>{selectedPricingAuditRow.customerName || 'Unknown customer'}</p>
+              </div>
+              <button type="button" aria-label="Close pricing details" onClick={() => setSelectedPricingAuditRow(null)}>
+                X
+              </button>
+            </div>
+            <div className="pricing-audit-modal-items">
+              {selectedPricingAuditRow.items.map((item) => (
+                <article key={`${selectedPricingAuditRow.rowIndex}-${item.quantity}-${item.name}`}>
+                  <div>
+                    <strong>{item.quantity}x {item.name}</strong>
+                    <span>
+                      {item.matched
+                        ? `${item.productTitle}${item.variantTitle ? ` - ${item.variantTitle}` : ''}`
+                        : 'No catalog match'}
+                    </span>
+                  </div>
+                  <div>
+                    <span>{item.unitPrice || '-'}</span>
+                    <strong>{item.lineTotal || '-'}</strong>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <dl className="pricing-audit-modal-summary">
+              <div>
+                <dt>Subtotal</dt>
+                <dd>{selectedPricingAuditRow.subtotal}</dd>
+              </div>
+              <div>
+                <dt>Discount</dt>
+                <dd>
+                  {selectedPricingAuditRow.discount}
+                  {selectedPricingAuditRow.discountNote ? (
+                    <small>{selectedPricingAuditRow.discountNote}</small>
+                  ) : null}
+                </dd>
+              </div>
+              <div>
+                <dt>Expected</dt>
+                <dd>{selectedPricingAuditRow.expectedTotal}</dd>
+              </div>
+              <div>
+                <dt>Collected</dt>
+                <dd>{selectedPricingAuditRow.totalCollected}</dd>
+              </div>
+              <div>
+                <dt>Difference</dt>
+                <dd>{selectedPricingAuditRow.difference}</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>
+                  <span className={`pricing-audit-status ${getVerificationClass(selectedPricingAuditRow.status === 'Match' ? 'Yes' : selectedPricingAuditRow.status === 'Mismatch' ? 'No' : '')}`}>
+                    {selectedPricingAuditRow.status}
+                  </span>
+                </dd>
+              </div>
+            </dl>
+          </section>
+        </div>
+      ) : null}
     </section>
   )
 }
