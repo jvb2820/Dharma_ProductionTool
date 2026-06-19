@@ -128,6 +128,20 @@ function formatAuditPaymentDates(dates) {
   return `${dates.length} uploaded EDT dates`
 }
 
+function formatDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+
+  if (minutes <= 0) return `${seconds}s`
+
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`
+}
+
+function estimateVerificationDurationMs(rowCount, paymentDateCount) {
+  return Math.max(15000, rowCount * 450 + Math.max(paymentDateCount, 1) * 5000)
+}
+
 function getRowsFromWorkbook(workbook) {
   return workbook.SheetNames.flatMap((sheetName) => {
     const worksheet = workbook.Sheets[sheetName]
@@ -178,6 +192,8 @@ function HomeDashboard() {
   const [unrecordedPayments, setUnrecordedPayments] = useState([])
   const [hasCheckedUnrecordedPayments, setHasCheckedUnrecordedPayments] = useState(false)
   const [isVerifying, setIsVerifying] = useState(false)
+  const [verificationStartedAt, setVerificationStartedAt] = useState(null)
+  const [verificationTick, setVerificationTick] = useState(0)
   const [isHistoryLoading, setIsHistoryLoading] = useState(true)
   const [historyDate, setHistoryDate] = useState(() => getYesterdayEdtDateValue())
 
@@ -231,6 +247,26 @@ function HomeDashboard() {
 
   const uploadedPaymentDates = useMemo(() => getUniquePaymentDates(records), [records])
   const auditPaymentDateLabel = formatAuditPaymentDates(uploadedPaymentDates)
+  const verificationProgress = useMemo(() => {
+    if (!isVerifying || !verificationStartedAt) {
+      return {
+        elapsedMs: 0,
+        estimatedMs: 0,
+        remainingMs: 0,
+        percent: 0,
+      }
+    }
+
+    const estimatedMs = estimateVerificationDurationMs(records.length, uploadedPaymentDates.length)
+    const elapsedMs = Math.max(0, verificationTick - verificationStartedAt)
+
+    return {
+      elapsedMs,
+      estimatedMs,
+      remainingMs: Math.max(0, estimatedMs - elapsedMs),
+      percent: Math.min(96, Math.max(8, Math.round((elapsedMs / estimatedMs) * 100))),
+    }
+  }, [isVerifying, records.length, uploadedPaymentDates.length, verificationStartedAt, verificationTick])
 
   useEffect(() => {
     let isCurrent = true
@@ -257,6 +293,16 @@ function HomeDashboard() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!isVerifying) return undefined
+
+    const intervalId = window.setInterval(() => {
+      setVerificationTick(Date.now())
+    }, 1000)
+
+    return () => window.clearInterval(intervalId)
+  }, [isVerifying])
+
   const handleFileUpload = async (event) => {
     const [file] = event.target.files
 
@@ -269,6 +315,7 @@ function HomeDashboard() {
     setUnrecordedPayments([])
     setHasCheckedUnrecordedPayments(false)
     setIsVerifying(false)
+    setVerificationStartedAt(null)
 
     try {
       const fileBuffer = await file.arrayBuffer()
@@ -306,6 +353,8 @@ function HomeDashboard() {
     }
 
     setIsVerifying(true)
+    setVerificationStartedAt(Date.now())
+    setVerificationTick(Date.now())
     setUploadMessage(`Verifying ${records.length} row${records.length === 1 ? '' : 's'} in Stripe...`)
 
     try {
@@ -333,6 +382,7 @@ function HomeDashboard() {
       console.error(error)
     } finally {
       setIsVerifying(false)
+      setVerificationStartedAt(null)
     }
   }
 
@@ -483,6 +533,21 @@ function HomeDashboard() {
                       <button className="verify-button" type="button" onClick={handleVerifyPayments} disabled={isVerifying}>
                         {isVerifying ? 'Verifying...' : 'Verify'}
                       </button>
+                    </div>
+                  ) : null}
+                  {isVerifying ? (
+                    <div className="verification-loader" role="status" aria-live="polite">
+                      <div className="verification-loader-heading">
+                        <span>Checking Stripe payments</span>
+                        <strong>{verificationProgress.percent}%</strong>
+                      </div>
+                      <div className="verification-loader-bar" aria-hidden="true">
+                        <span style={{ width: `${verificationProgress.percent}%` }} />
+                      </div>
+                      <div className="verification-loader-meta">
+                        <span>Elapsed {formatDuration(verificationProgress.elapsedMs)}</span>
+                        <span>ETA {formatDuration(verificationProgress.remainingMs)}</span>
+                      </div>
                     </div>
                   ) : null}
                   {uploadMessage ? <p className="upload-message">{uploadMessage}</p> : null}

@@ -190,6 +190,53 @@
   opacity: 0.62;
 }
 
+.verification-loader {
+  display: grid;
+  gap: 8px;
+  margin: 12px 4px 0;
+  padding: 12px;
+  border: 1px solid rgba(0, 86, 63, 0.14);
+  border-radius: 8px;
+  background: #fffef9;
+}
+
+.verification-loader-heading,
+.verification-loader-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.verification-loader-heading span,
+.verification-loader-heading strong,
+.verification-loader-meta span {
+  color: #1f3428;
+  font-size: 0.76rem;
+  font-weight: 950;
+}
+
+.verification-loader-meta span {
+  color: #516f5f;
+  font-size: 0.72rem;
+}
+
+.verification-loader-bar {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7ece8;
+}
+
+.verification-loader-bar span {
+  display: block;
+  height: 100%;
+  min-width: 18px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--gold), #10a6b8, var(--green));
+  transition: width 350ms ease;
+}
+
 .upload-message {
   margin: 12px 4px 0;
   color: var(--muted);
@@ -2466,10 +2513,6 @@
 
   .home-view-tabs button {
     min-height: 44px;
-  }
-
-  .unrecorded-payment-item {
-    grid-template-columns: 1fr;
   }
 
   .home-total-card,
