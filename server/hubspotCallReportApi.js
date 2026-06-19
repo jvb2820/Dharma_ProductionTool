@@ -25,7 +25,7 @@ const stripeVerificationCache = new Map()
 let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
-const callReportCacheVersion = 'contact-call-v4'
+const callReportCacheVersion = 'contact-call-v5'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
 const reportErrors = new Map()
@@ -2352,7 +2352,7 @@ async function buildCallReport(selectedDate) {
         : previousDayFallbackCalls
       const previousDayCall = previousDayCalls[0]
       const appointmentCancelled = isCancelledMeeting(row.meetingName)
-      const outboundExempt = !matchingCall && isCreatedWithinOneHourOfAppointment(row.createdAt, row.scheduledAt)
+      const outboundExempt = isCreatedWithinOneHourOfAppointment(row.createdAt, row.scheduledAt)
 
       return {
         ...row,
