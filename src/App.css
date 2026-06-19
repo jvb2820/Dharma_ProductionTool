@@ -759,7 +759,7 @@
 
 .unrecorded-payments-table {
   width: 100%;
-  min-width: 980px;
+  min-width: 1160px;
   border-collapse: collapse;
 }
 
@@ -807,6 +807,25 @@
 .unrecorded-payments-table td:nth-child(6) {
   width: 90px;
   text-align: center;
+}
+
+.unrecorded-payments-table th:nth-child(7),
+.unrecorded-payments-table td:nth-child(7) {
+  width: 220px;
+}
+
+.unrecorded-warning-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 4px 8px;
+  border: 1px solid #f0b66a;
+  border-radius: 999px;
+  color: #8c4b00;
+  background: #fff4d6;
+  font-size: 0.7rem;
+  font-weight: 950;
+  line-height: 1.1;
 }
 
 .unrecorded-payments-empty {

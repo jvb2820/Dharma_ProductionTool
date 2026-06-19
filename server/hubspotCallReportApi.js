@@ -2191,6 +2191,7 @@ function normalizeStripeChargeForUnrecorded(charge, paymentDate) {
     customerState: charge.billing_details?.address?.state ?? '',
     description: charge.description ?? '',
     status: charge.status ?? '',
+    warning: charge.unrecordedWarning ?? '',
   }
 }
 
@@ -2308,6 +2309,45 @@ function filterChargesMatchedByUploadedEmailTotals(charges, uploadedAmountCounts
   return charges.filter((charge) => !matchedChargeIds.has(charge.id))
 }
 
+function getChargeEmailAmountKey(charge) {
+  const email = getStripeChargeEmails(charge)[0]
+
+  if (!email || !charge.amount) return ''
+
+  return `${email}:${charge.amount}`
+}
+
+function findDuplicateStripeChargesNotCoveredBySheet(stripeCharges, uploadedAmountCountsByEmail) {
+  const chargesByEmailAndAmount = stripeCharges.reduce((lookup, charge) => {
+    const key = getChargeEmailAmountKey(charge)
+
+    if (!key) return lookup
+
+    const matchingCharges = lookup.get(key) ?? []
+    matchingCharges.push(charge)
+    lookup.set(key, matchingCharges)
+
+    return lookup
+  }, new Map())
+  const duplicateChargeIds = new Set()
+
+  chargesByEmailAndAmount.forEach((matchingCharges) => {
+    if (matchingCharges.length <= 1) return
+
+    const email = getStripeChargeEmails(matchingCharges[0])[0]
+    const amount = matchingCharges[0].amount
+    const uploadedCount = uploadedAmountCountsByEmail.get(email)?.get(amount) ?? 0
+    const duplicateCount = Math.max(0, matchingCharges.length - uploadedCount)
+
+    matchingCharges
+      .sort((left, right) => (right.created ?? 0) - (left.created ?? 0))
+      .slice(0, duplicateCount)
+      .forEach((charge) => duplicateChargeIds.add(charge.id))
+  })
+
+  return duplicateChargeIds
+}
+
 function findStripeChargesMatchingUploadedEmailTotal(row, charges, amountCents) {
   const rowEmails = getUploadedRowEmails(row)
 
@@ -2335,9 +2375,19 @@ async function findStripePaymentsNotInSheet(rows) {
     if (!dateRange) continue
 
     const stripeCharges = await listStripeChargesForDateRange(dateRange)
+    const uploadedAmountCountsByEmail = uploadedEmailAmountsByDate.get(paymentDate) ?? new Map()
+    const duplicateChargeIds = findDuplicateStripeChargesNotCoveredBySheet(stripeCharges, uploadedAmountCountsByEmail)
     const unmatchedCharges = []
 
     stripeCharges.forEach((charge) => {
+      if (duplicateChargeIds.has(charge.id)) {
+        unmatchedCharges.push({
+          ...charge,
+          unrecordedWarning: 'Duplicate same-email amount not fully recorded in sheet',
+        })
+        return
+      }
+
       if (useUploadedAmountCount(amountCounts, charge.amount)) {
         const chargeEmail = getStripeChargeEmails(charge)[0]
         const uploadedAmountCountsForEmail = uploadedEmailAmountsByDate.get(paymentDate)?.get(chargeEmail)
@@ -2349,7 +2399,6 @@ async function findStripePaymentsNotInSheet(rows) {
       unmatchedCharges.push(charge)
     })
 
-    const uploadedAmountCountsByEmail = uploadedEmailAmountsByDate.get(paymentDate) ?? new Map()
     const remainingUnmatchedCharges = filterChargesMatchedByUploadedEmailTotals(
       unmatchedCharges,
       uploadedAmountCountsByEmail,

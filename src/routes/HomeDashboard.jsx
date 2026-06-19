@@ -622,6 +622,7 @@ function HomeDashboard() {
                             <th scope="col">Price</th>
                             <th scope="col">Date</th>
                             <th scope="col">State</th>
+                            <th scope="col">Warning</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -633,6 +634,13 @@ function HomeDashboard() {
                               <td>{payment.amount || '-'}</td>
                               <td>{payment.createdAt || payment.paymentDate || '-'}</td>
                               <td>{payment.customerState || '-'}</td>
+                              <td>
+                                {payment.warning ? (
+                                  <span className="unrecorded-warning-badge">{payment.warning}</span>
+                                ) : (
+                                  '-'
+                                )}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
