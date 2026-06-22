@@ -2892,6 +2892,37 @@ function formatCents(cents) {
   return formatStripeAmount(cents ?? 0, 'usd')
 }
 
+function resolveFinancingFeePolicy(row, baseExpectedTotalCents) {
+  const searchableText = normalizeMatchText([
+    row['Tender Note'],
+    row['Discount Name'],
+    row.Description,
+  ].join(' '))
+  const financingMethods = [
+    { label: 'Affirm', pattern: /\baffirm\b/ },
+    { label: 'Klarna', pattern: /\bklarna\b/ },
+    { label: 'Afterpay/Clearpay', pattern: /\b(?:afterpay|clearpay)\b/ },
+    { label: 'CareCredit', pattern: /\b(?:carecredit|care credit|carecredxit)\b/ },
+  ]
+  const matchedMethod = financingMethods.find((method) => method.pattern.test(searchableText))
+
+  if (!matchedMethod || baseExpectedTotalCents <= 0) {
+    return {
+      method: '',
+      feeRate: 0,
+      feeCents: 0,
+      note: '',
+    }
+  }
+
+  return {
+    method: matchedMethod.label,
+    feeRate: 0.06,
+    feeCents: Math.round(baseExpectedTotalCents * 0.06),
+    note: `6% financing fee for ${matchedMethod.label}`,
+  }
+}
+
 async function auditShopifyPricingRows(rows) {
   const catalog = getProductPricingCatalog()
 
@@ -2922,7 +2953,9 @@ async function auditShopifyPricingRows(rows) {
     })
     const subtotalCents = auditedItems.reduce((total, item) => total + item.lineTotalCents, 0)
     const discount = await resolveShopifyDiscountAdjustment(row['Discount Name'], subtotalCents)
-    const expectedTotalCents = Math.max(0, subtotalCents - discount.discountCents)
+    const baseExpectedTotalCents = Math.max(0, subtotalCents - discount.discountCents)
+    const financingFee = resolveFinancingFeePolicy(row, baseExpectedTotalCents)
+    const expectedTotalCents = baseExpectedTotalCents + financingFee.feeCents
     const collectedCents = parseMoneyToCents(row['Total Collected']) ?? 0
     const differenceCents = collectedCents - expectedTotalCents
     const hasMissingMatches = auditedItems.some((item) => !item.matched)
@@ -2941,6 +2974,11 @@ async function auditShopifyPricingRows(rows) {
       discount: discount.discountCents ? `-${formatCents(discount.discountCents)}` : '$0.00',
       discountNote: discount.note,
       discountSource: discount.source,
+      financingFee: financingFee.feeCents ? formatCents(financingFee.feeCents) : '$0.00',
+      financingFeeNote: financingFee.note,
+      financingPaymentMethod: financingFee.method,
+      financingFeeRate: financingFee.feeRate,
+      baseExpectedTotal: formatCents(baseExpectedTotalCents),
       expectedTotal: formatCents(expectedTotalCents),
       totalCollected: formatCents(collectedCents),
       difference: formatCents(differenceCents),

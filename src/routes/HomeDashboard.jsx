@@ -947,6 +947,15 @@ function HomeDashboard() {
                 </dd>
               </div>
               <div>
+                <dt>Financing Fee</dt>
+                <dd>
+                  {selectedPricingAuditRow.financingFee || '$0.00'}
+                  {selectedPricingAuditRow.financingFeeNote ? (
+                    <small>{selectedPricingAuditRow.financingFeeNote}</small>
+                  ) : null}
+                </dd>
+              </div>
+              <div>
                 <dt>Expected</dt>
                 <dd>{selectedPricingAuditRow.expectedTotal}</dd>
               </div>
