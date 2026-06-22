@@ -12,11 +12,12 @@ const tableHeaders = [
   'Description',
   'Customer Name',
   'Discount Name',
+  'Pricing',
   'Verification',
   'Dharma Orders',
 ]
 
-const manualHeaders = ['Dharma Orders', 'Verification']
+const manualHeaders = ['Dharma Orders', 'Pricing', 'Verification']
 const uploadHeaders = tableHeaders.filter((header) => !manualHeaders.includes(header))
 
 const uploadHeaderAliases = {
@@ -63,6 +64,13 @@ function getVerificationClass(value) {
 function getManualSelectClass(value) {
   if (value === 'Yes') return 'verified'
   if (value === 'No') return 'missing'
+
+  return 'pending'
+}
+
+function getPricingStatusClass(status) {
+  if (status === 'Match') return 'verified'
+  if (status === 'Mismatch') return 'missing'
 
   return 'pending'
 }
@@ -744,6 +752,14 @@ function HomeDashboard() {
                                   >
                                     {record[header] || '-'}
                                   </button>
+                                ) : header === 'Pricing' && pricingAuditRows[rowIndex] ? (
+                                  <button
+                                    className={`pricing-audit-button pricing-audit-status ${getPricingStatusClass(pricingAuditRows[rowIndex].status)}`}
+                                    type="button"
+                                    onClick={() => setSelectedPricingAuditRow(pricingAuditRows[rowIndex])}
+                                  >
+                                    {pricingAuditRows[rowIndex].status}
+                                  </button>
                                 ) : (
                                   record[header] || '-'
                                 )}
@@ -906,6 +922,7 @@ function HomeDashboard() {
                       {item.matched
                         ? `${item.productTitle}${item.variantTitle ? ` - ${item.variantTitle}` : ''}`
                         : 'No catalog match'}
+                      {item.pricingPolicy ? ` - ${item.pricingPolicy}` : ''}
                     </span>
                   </div>
                   <div>
@@ -944,7 +961,7 @@ function HomeDashboard() {
               <div>
                 <dt>Status</dt>
                 <dd>
-                  <span className={`pricing-audit-status ${getVerificationClass(selectedPricingAuditRow.status === 'Match' ? 'Yes' : selectedPricingAuditRow.status === 'Mismatch' ? 'No' : '')}`}>
+                  <span className={`pricing-audit-status ${getPricingStatusClass(selectedPricingAuditRow.status)}`}>
                     {selectedPricingAuditRow.status}
                   </span>
                 </dd>

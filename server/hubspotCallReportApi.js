@@ -2635,6 +2635,59 @@ function findBestCatalogMatch(item, catalog) {
   }
 }
 
+function getCatalogItemByName(catalog, name) {
+  const normalizedName = normalizePricingText(name)
+
+  return catalog.find((catalogItem) => catalogItem.normalizedText === normalizedName) ?? null
+}
+
+function isNutritionConsultationItem(item) {
+  const itemText = normalizePricingText(item.name)
+
+  return itemText.includes('nutrition') && itemText.includes('consultation')
+}
+
+function isInjectablePricingItem(item) {
+  const itemText = normalizePricingText(item.name)
+
+  return /\b(?:semaglutide|tirzepatide|lipo|mino|nad|ghk|sermorelin|glutathione|slimboost)\b/.test(itemText)
+}
+
+function resolveNutritionPricingPolicy(item, lineItems, catalog, fallbackMatch) {
+  if (!isNutritionConsultationItem(item)) return null
+
+  const bundleCatalogName = {
+    3: 'Nutrition Consultation 3 months',
+    6: 'Nutrition Consultation 6 months',
+    12: 'Nutrition Consultation 12 months',
+  }[item.quantity]
+  const bundleMatch = bundleCatalogName ? getCatalogItemByName(catalog, bundleCatalogName) : null
+
+  if (bundleMatch) {
+    return {
+      match: bundleMatch,
+      unitPriceCents: Math.round(bundleMatch.priceCents / item.quantity),
+      lineTotalCents: bundleMatch.priceCents,
+      note: `${item.quantity}-appointment nutrition bundle`,
+    }
+  }
+
+  const hasInjection = lineItems.some((lineItem) => lineItem !== item && isInjectablePricingItem(lineItem))
+  const catalogName = hasInjection
+    ? 'Nutrition Consultation 1 month'
+    : 'Nutrition Consultation 1 month - Non GLP-1 Clients'
+  const policyMatch = getCatalogItemByName(catalog, catalogName) ?? fallbackMatch
+
+  if (!policyMatch) return null
+
+  return {
+    match: policyMatch,
+    unitPriceCents: policyMatch.priceCents,
+    lineTotalCents: policyMatch.priceCents * item.quantity,
+    note: hasInjection ? 'Nutrition with injection price' : 'Nutrition-only price',
+  }
+}
+
 function parseLocalDiscountAdjustment(discountName, subtotalCents) {
   const value = String(discountName ?? '').trim()
 
@@ -2848,20 +2901,23 @@ async function auditShopifyPricingRows(rows) {
     const lineItems = parseDescriptionLineItems(row.Description)
     const auditedItems = lineItems.map((item) => {
       const match = findBestCatalogMatch(item, catalog)
-      const unitPriceCents = match?.priceCents ?? 0
-      const lineTotalCents = unitPriceCents * item.quantity
+      const pricingPolicy = resolveNutritionPricingPolicy(item, lineItems, catalog, match)
+      const resolvedMatch = pricingPolicy?.match ?? match
+      const unitPriceCents = pricingPolicy?.unitPriceCents ?? resolvedMatch?.priceCents ?? 0
+      const lineTotalCents = pricingPolicy?.lineTotalCents ?? unitPriceCents * item.quantity
 
       return {
         quantity: item.quantity,
         name: item.name,
-        matched: Boolean(match),
-        matchScore: match?.score ?? 0,
-        productTitle: match?.productTitle ?? '',
-        variantTitle: match?.variantTitle ?? '',
-        sku: match?.sku ?? '',
-        unitPrice: match ? formatCents(unitPriceCents) : '',
-        lineTotal: match ? formatCents(lineTotalCents) : '',
+        matched: Boolean(resolvedMatch),
+        matchScore: resolvedMatch?.score ?? 0,
+        productTitle: resolvedMatch?.productTitle ?? '',
+        variantTitle: resolvedMatch?.variantTitle ?? '',
+        sku: resolvedMatch?.sku ?? '',
+        unitPrice: resolvedMatch ? formatCents(unitPriceCents) : '',
+        lineTotal: resolvedMatch ? formatCents(lineTotalCents) : '',
         lineTotalCents,
+        pricingPolicy: pricingPolicy?.note ?? '',
       }
     })
     const subtotalCents = auditedItems.reduce((total, item) => total + item.lineTotalCents, 0)
