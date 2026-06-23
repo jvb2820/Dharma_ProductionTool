@@ -13,7 +13,7 @@ const trackingHeaders = [
   'Delivery Date',
   'Status',
 ]
-const overdueBusinessDaysThreshold = 5
+const overdueDaysThreshold = 5
 const trackingAutoRefreshMs = 5 * 60 * 1000
 const trackingBusinessTimeZone = 'America/New_York'
 const trackingBusinessDateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -92,25 +92,14 @@ function getTrackingBusinessToday(now = new Date()) {
   return new Date(Date.UTC(values.year, values.month - 1, values.day, 12))
 }
 
-function countBusinessDays(startDate, endDate = getTrackingBusinessToday()) {
+function countOpenDays(startDate, endDate = getTrackingBusinessToday()) {
   if (!startDate) return 0
 
-  const current = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate(), 12))
-  const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate(), 12))
-  let businessDays = 0
+  const start = Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate())
+  const end = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate())
+  const dayMs = 24 * 60 * 60 * 1000
 
-  current.setUTCDate(current.getUTCDate() + 1)
-
-  while (current <= end) {
-    const day = current.getUTCDay()
-
-    if (day !== 0 && day !== 6) {
-      businessDays += 1
-    }
-    current.setUTCDate(current.getUTCDate() + 1)
-  }
-
-  return businessDays
+  return Math.max(0, Math.floor((end - start) / dayMs))
 }
 
 function getNormalizedTrackingStatus(value) {
@@ -208,25 +197,25 @@ function Tracking() {
     const rowsWithAge = report.rows.map((row) => {
       const normalizedStatus = getNormalizedTrackingStatus(row.status)
       const ageStartDate = parseTrackingDate(row.dateShipped || row.date)
-      const businessDaysOpen = normalizedStatus === 'delivered'
+      const daysOpen = normalizedStatus === 'delivered'
         ? 0
-        : countBusinessDays(ageStartDate)
+        : countOpenDays(ageStartDate)
 
       statusGroups[normalizedStatus].count += 1
 
       return {
         ...row,
         normalizedStatus,
-        businessDaysOpen,
+        businessDaysOpen: daysOpen,
       }
     })
     const overdueRows = rowsWithAge
-      .filter((row) => row.normalizedStatus !== 'delivered' && row.businessDaysOpen > overdueBusinessDaysThreshold)
+      .filter((row) => row.normalizedStatus !== 'delivered' && row.businessDaysOpen > overdueDaysThreshold)
       .sort((left, right) => right.businessDaysOpen - left.businessDaysOpen)
     const warningRows = rowsWithAge
       .filter((row) =>
         row.normalizedStatus === 'failed'
-        || (row.normalizedStatus !== 'delivered' && row.businessDaysOpen > overdueBusinessDaysThreshold),
+        || (row.normalizedStatus !== 'delivered' && row.businessDaysOpen > overdueDaysThreshold),
       )
       .sort((left, right) =>
         right.businessDaysOpen - left.businessDaysOpen
@@ -288,9 +277,9 @@ function Tracking() {
               <small>
                 Open shipments over
                 {' '}
-                {overdueBusinessDaysThreshold}
+                {overdueDaysThreshold}
                 {' '}
-                business days
+                days
               </small>
             </div>
             <div className="tracking-risk-graphic" aria-hidden="true">
@@ -363,7 +352,7 @@ function Tracking() {
                       <small>
                         {row.businessDaysOpen}
                         {' '}
-                        business days
+                        days
                       </small>
                     </div>
                   </div>

@@ -15,7 +15,7 @@ const defaultShopifyStatusSheetCsvUrl = 'https://docs.google.com/spreadsheets/d/
 const supabaseTrackingTable = process.env.SUPABASE_TRACKING_TABLE ?? 'tracking_dashboard'
 const supabasePaymentHistoryTable = process.env.SUPABASE_PAYMENT_HISTORY_TABLE ?? 'payment_history'
 const excludedTrackingOrderNumbers = readExcludedTrackingOrderNumbers()
-const overdueBusinessDaysThreshold = 5
+const overdueDaysThreshold = 5
 const connectedDispositionId = 'f240bbac-87c9-4f6e-bf70-924b57d47db7'
 const defaultAllowedOrigins = ['http://127.0.0.1:5173', 'http://localhost:5173']
 const reportTimeZone = process.env.HUBSPOT_REPORT_TIMEZONE ?? 'America/New_York'
@@ -454,25 +454,14 @@ function paymentDateToIso(value) {
   return date.toISOString().slice(0, 10)
 }
 
-function countTrackingBusinessDays(startDate, endDate = getTrackingBusinessToday()) {
+function countTrackingOpenDays(startDate, endDate = getTrackingBusinessToday()) {
   if (!startDate) return 0
 
-  const current = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate(), 12))
-  const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate(), 12))
-  let businessDays = 0
+  const start = Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate())
+  const end = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate())
+  const dayMs = 24 * 60 * 60 * 1000
 
-  current.setUTCDate(current.getUTCDate() + 1)
-
-  while (current <= end) {
-    const day = current.getUTCDay()
-
-    if (day !== 0 && day !== 6) {
-      businessDays += 1
-    }
-    current.setUTCDate(current.getUTCDate() + 1)
-  }
-
-  return businessDays
+  return Math.max(0, Math.floor((end - start) / dayMs))
 }
 
 function isDeliveredStatus(value) {
@@ -777,7 +766,7 @@ function buildTrackingDatabaseRow(row, sourceUpdatedAt) {
   const deliveryDate = displayDateToIso(row.deliveryDate)
   const ageStartDate = parseDisplayDate(row.dateShipped || row.date)
   const delivered = isDeliveredStatus(row.status)
-  const businessDaysOpen = delivered ? 0 : countTrackingBusinessDays(ageStartDate)
+  const daysOpen = delivered ? 0 : countTrackingOpenDays(ageStartDate)
 
   return {
     row_id: String(row.rowId ?? `${row.orderNumber}|${row.item}|${row.tracking}`),
@@ -794,8 +783,8 @@ function buildTrackingDatabaseRow(row, sourceUpdatedAt) {
     delivery_date: deliveryDate,
     status: row.status || null,
     status_source: row.statusSource || null,
-    business_days_open: businessDaysOpen,
-    is_overdue: !delivered && businessDaysOpen > overdueBusinessDaysThreshold,
+    business_days_open: daysOpen,
+    is_overdue: !delivered && daysOpen > overdueDaysThreshold,
     observation: row.observation || null,
     raw_data: row,
     source_updated_at: sourceUpdatedAt,
