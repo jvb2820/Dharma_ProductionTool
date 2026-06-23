@@ -19,6 +19,13 @@ const overdueBusinessDaysThreshold = 5
 const connectedDispositionId = 'f240bbac-87c9-4f6e-bf70-924b57d47db7'
 const defaultAllowedOrigins = ['http://127.0.0.1:5173', 'http://localhost:5173']
 const reportTimeZone = process.env.HUBSPOT_REPORT_TIMEZONE ?? 'America/New_York'
+const trackingBusinessTimeZone = 'America/New_York'
+const trackingBusinessDateFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: trackingBusinessTimeZone,
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+})
 const reportCache = new Map()
 const trackingCache = new Map()
 const uspsTrackingCache = new Map()
@@ -398,6 +405,13 @@ function isoDateToDisplay(value) {
   }).format(date)
 }
 
+function getTrackingBusinessToday(now = new Date()) {
+  const parts = trackingBusinessDateFormatter.formatToParts(now)
+  const values = Object.fromEntries(parts.map((part) => [part.type, Number(part.value)]))
+
+  return new Date(Date.UTC(values.year, values.month - 1, values.day, 12))
+}
+
 function paymentDateToIso(value) {
   const rawValue = String(value ?? '').trim()
   if (!rawValue) return null
@@ -440,22 +454,22 @@ function paymentDateToIso(value) {
   return date.toISOString().slice(0, 10)
 }
 
-function countTrackingBusinessDays(startDate, endDate = new Date()) {
+function countTrackingBusinessDays(startDate, endDate = getTrackingBusinessToday()) {
   if (!startDate) return 0
 
-  const current = new Date(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate())
-  const end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate())
+  const current = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate(), 12))
+  const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate(), 12))
   let businessDays = 0
 
-  current.setDate(current.getDate() + 1)
+  current.setUTCDate(current.getUTCDate() + 1)
 
   while (current <= end) {
-    const day = current.getDay()
+    const day = current.getUTCDay()
 
     if (day !== 0 && day !== 6) {
       businessDays += 1
     }
-    current.setDate(current.getDate() + 1)
+    current.setUTCDate(current.getUTCDate() + 1)
   }
 
   return businessDays

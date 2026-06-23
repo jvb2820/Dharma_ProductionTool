@@ -15,6 +15,13 @@ const trackingHeaders = [
 ]
 const overdueBusinessDaysThreshold = 5
 const trackingAutoRefreshMs = 5 * 60 * 1000
+const trackingBusinessTimeZone = 'America/New_York'
+const trackingBusinessDateFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: trackingBusinessTimeZone,
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+})
 
 function displayCell(value) {
   return value || '-'
@@ -73,27 +80,34 @@ function parseTrackingDate(value) {
   if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return null
 
   const [month, day, year] = parts
-  const date = new Date(year, month - 1, day)
+  const date = new Date(Date.UTC(year, month - 1, day, 12))
 
   return Number.isNaN(date.getTime()) ? null : date
 }
 
-function countBusinessDays(startDate, endDate = new Date()) {
+function getTrackingBusinessToday(now = new Date()) {
+  const parts = trackingBusinessDateFormatter.formatToParts(now)
+  const values = Object.fromEntries(parts.map((part) => [part.type, Number(part.value)]))
+
+  return new Date(Date.UTC(values.year, values.month - 1, values.day, 12))
+}
+
+function countBusinessDays(startDate, endDate = getTrackingBusinessToday()) {
   if (!startDate) return 0
 
-  const current = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate())
-  const end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate())
+  const current = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate(), 12))
+  const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate(), 12))
   let businessDays = 0
 
-  current.setDate(current.getDate() + 1)
+  current.setUTCDate(current.getUTCDate() + 1)
 
   while (current <= end) {
-    const day = current.getDay()
+    const day = current.getUTCDay()
 
     if (day !== 0 && day !== 6) {
       businessDays += 1
     }
-    current.setDate(current.getDate() + 1)
+    current.setUTCDate(current.getUTCDate() + 1)
   }
 
   return businessDays
