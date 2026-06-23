@@ -2534,6 +2534,7 @@ function normalizePricingText(value) {
     .replace(/\bcapsules\b/g, ' capsule ')
     .replace(/\binjection\b/g, ' ')
     .replace(/\bpersonalized\b/g, ' ')
+    .replace(/\bsermorlin\b/g, 'sermorelin')
     .replace(/\bnutrition\b/g, 'nutrition')
     .replace(/\bslim\s+boost\b/g, 'slimboost')
     .replace(/\s+/g, ' ')
@@ -2543,6 +2544,8 @@ function normalizePricingText(value) {
 function readDurationMonths(value) {
   const text = normalizeMatchText(value)
 
+  if (/\b30\s*d(?:ays?)?\b/.test(text)) return 1
+  if (/\b60\s*d(?:ays?)?\b/.test(text)) return 2
   if (/\b(?:one|1)\s+month\b/.test(text)) return 1
   if (/\b(?:two|2)\s+months?\b/.test(text)) return 2
   if (/\b(?:three|3)\s+months?\b/.test(text)) return 3
