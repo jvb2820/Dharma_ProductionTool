@@ -14,6 +14,7 @@ const outboundCallerAssignments = [
       'Alejandro Rivera',
       'Leonardo Goncalves',
       'Meribet Yazziet',
+      'Andres Castro',
       'María Claudia',
       'Maria Claudia',
       'MarÃ­a Claudia',
