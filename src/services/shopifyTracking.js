@@ -1,4 +1,4 @@
-const sessionCacheKey = 'shopify-tracking-report:v2'
+const sessionCacheKey = 'shopify-tracking-report:v3'
 const defaultRowsLimit = 1000
 
 function getSessionCacheKey(options = {}) {
@@ -24,7 +24,17 @@ function normalizeTrackingRow(row) {
     status: row.status ?? '',
     statusSource: row.statusSource ?? '',
     observation: row.observation ?? '',
+    financialStatus: row.financialStatus ?? row.financial_status ?? '',
+    cancelledAt: row.cancelledAt ?? row.cancelled_at ?? '',
   }
+}
+
+function shouldHideTrackingRow(row) {
+  const financialStatus = String(row.financialStatus ?? '').toLowerCase()
+
+  return Boolean(row.cancelledAt)
+    || financialStatus === 'refunded'
+    || financialStatus === 'partially_refunded'
 }
 
 function readCachedTracking(options = {}) {
@@ -93,10 +103,11 @@ export async function loadShopifyTracking(options = {}) {
   const payload = await response.json()
   const rows = Array.isArray(payload) ? payload : payload.rows ?? payload.results ?? []
 
+  const normalizedRows = rows.map(normalizeTrackingRow).filter((row) => !shouldHideTrackingRow(row))
   const report = {
     source: payload.source ?? 'shopify',
-    rows: rows.map(normalizeTrackingRow),
-    orderCount: payload.orderCount ?? rows.length,
+    rows: normalizedRows,
+    orderCount: payload.orderCount ?? normalizedRows.length,
     pageCount: payload.pageCount ?? null,
     createdAtMin: payload.createdAtMin ?? null,
     rowsWithStatusCount: payload.rowsWithStatusCount ?? 0,

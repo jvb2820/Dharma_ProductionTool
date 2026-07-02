@@ -327,7 +327,7 @@ function normalizeMatchText(value) {
 }
 
 function normalizeTrackingOrderKey(value) {
-  return String(value ?? '').replace(/\s+/g, '').trim().toLowerCase()
+  return String(value ?? '').replace(/\s+/g, '').replace(/^#/, '').trim().toLowerCase()
 }
 
 function readExcludedTrackingOrderNumbers() {
@@ -341,12 +341,14 @@ function readExcludedTrackingOrderNumbers() {
   )
 }
 
-function isExcludedTrackingOrder(row) {
-  return excludedTrackingOrderNumbers.has(normalizeTrackingOrderKey(row?.orderNumber ?? row?.order_number))
+function isHiddenTrackingOrder(row, hiddenOrderNumbers = new Set()) {
+  const orderKey = normalizeTrackingOrderKey(row?.orderNumber ?? row?.order_number)
+
+  return excludedTrackingOrderNumbers.has(orderKey) || hiddenOrderNumbers.has(orderKey)
 }
 
-function filterExcludedTrackingOrders(rows) {
-  return rows.filter((row) => !isExcludedTrackingOrder(row))
+function filterExcludedTrackingOrders(rows, hiddenOrderNumbers = new Set()) {
+  return rows.filter((row) => !isHiddenTrackingOrder(row, hiddenOrderNumbers))
 }
 
 function chunkArray(values, size) {
@@ -473,6 +475,14 @@ function readOrderSort(value) {
   const match = String(value ?? '').match(/\d+/)
 
   return match ? Number(match[0]) : null
+}
+
+function isRefundedOrCancelledShopifyOrder(order) {
+  const financialStatus = String(order?.financial_status ?? '').toLowerCase()
+
+  return Boolean(order?.cancelled_at)
+    || financialStatus === 'refunded'
+    || financialStatus === 'partially_refunded'
 }
 
 function escapeXml(value) {
@@ -857,6 +867,7 @@ async function loadTrackingRowsFromSupabase(options = {}) {
   const pageSize = readTrackingRowsLimit(options.limit)
   let offset = readTrackingRowsOffset(options.offset)
   const targetRowCount = pageSize + (options.includeHasMore ? 1 : 0)
+  const hiddenOrderNumbers = options.hiddenOrderNumbers ?? new Set()
 
   while (rows.length < targetRowCount) {
     const limit = Math.min(pageSize, targetRowCount - rows.length)
@@ -870,14 +881,14 @@ async function loadTrackingRowsFromSupabase(options = {}) {
 
     if (!Array.isArray(pageRows) || pageRows.length === 0) break
 
-    rows.push(...pageRows)
+    rows.push(...filterExcludedTrackingOrders(pageRows, hiddenOrderNumbers))
 
     if (pageRows.length < limit) break
 
     offset += limit
   }
 
-  const normalizedRows = filterExcludedTrackingOrders(rows).map(normalizeTrackingDatabaseRow)
+  const normalizedRows = rows.map(normalizeTrackingDatabaseRow)
 
   if (options.includeHasMore) {
     return {
@@ -1625,6 +1636,9 @@ async function buildShopifyTrackingReport(options = {}) {
     'name',
     'order_number',
     'created_at',
+    'cancelled_at',
+    'cancel_reason',
+    'financial_status',
     'email',
     'phone',
     'customer',
@@ -1640,7 +1654,14 @@ async function buildShopifyTrackingReport(options = {}) {
     created_at_min: createdAtMin,
     fields,
   })
-  const rows = orders.flatMap((order) => {
+  const hiddenOrderNumbers = new Set(
+    orders
+      .filter(isRefundedOrCancelledShopifyOrder)
+      .map((order) => normalizeTrackingOrderKey(order.name ?? order.order_number ?? order.id))
+      .filter(Boolean),
+  )
+  const visibleOrders = orders.filter((order) => !isRefundedOrCancelledShopifyOrder(order))
+  const rows = visibleOrders.flatMap((order) => {
     const lineItems = order.line_items ?? []
 
     return lineItems.length > 0
@@ -1673,6 +1694,7 @@ async function buildShopifyTrackingReport(options = {}) {
         limit: rowsLimit,
         offset: rowsOffset,
         includeHasMore: true,
+        hiddenOrderNumbers,
       })
       : { rows: [], hasMoreRows: false }
 
@@ -1693,7 +1715,7 @@ async function buildShopifyTrackingReport(options = {}) {
   return {
     source: databaseRows.length > 0 ? 'supabase' : 'shopify',
     updatedAt,
-    orderCount: orders.length,
+    orderCount: visibleOrders.length,
     pageCount,
     hitPageLimit,
     createdAtMin: createdAtMin ?? null,
