@@ -17,6 +17,7 @@ const outboundCallerAssignments = [
       'Andres Castro',
       'María Claudia',
       'Maria Claudia',
+      'Diana Villalobos',
       'MarÃ­a Claudia',
     ],
   },
@@ -479,6 +480,7 @@ function HubSpotCallReport() {
     const assignment = outboundCallerAssignments.find((entry) => entry.id === 'juan-secondary')
     if (!assignment) return null
 
+    const shouldUseCurrentDayCalling = reportWeekday === 'Monday'
     const assignedCallerName = outboundAssignmentOverrides[assignment.ownerName] || assignment.ownerName
     const assignedCallerKey = normalizePersonName(assignedCallerName)
     const agentRows = createEmptyAssignmentStats({
@@ -495,7 +497,8 @@ function HubSpotCallReport() {
       if (!rosterAgentName) return
 
       const meetingHost = agentRows.meetingHosts.get(normalizePersonName(rosterAgentName))
-      const previousDayCalledByAssignedCaller = (row.previousDayCallers ?? [])
+      const callerNames = shouldUseCurrentDayCalling ? row.qualifyingCallers : row.previousDayCallers
+      const previousDayCalledByAssignedCaller = (callerNames ?? [])
         .some((callerName) => normalizePersonName(callerName) === assignedCallerKey)
 
       agentRows.totalAppointments += 1
@@ -524,7 +527,7 @@ function HubSpotCallReport() {
         ? Math.round((agentRows.totalAppointments / scheduleRows.length) * 100)
         : 0,
     }
-  }, [outboundAssignmentOverrides, scheduleRows])
+  }, [outboundAssignmentOverrides, reportWeekday, scheduleRows])
   const confirmedRate = scheduleRows.length > 0
     ? Math.round((totalConfirmedAppointments / scheduleRows.length) * 100)
     : 0
