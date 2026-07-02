@@ -838,16 +838,55 @@ async function upsertTrackingRowsToSupabase(rows, sourceUpdatedAt) {
   return true
 }
 
-async function loadTrackingRowsFromSupabase() {
+function readTrackingRowsLimit(value, fallback = 1000) {
+  const limit = Number(value)
+
+  return Math.min(Math.max(Number.isFinite(limit) ? limit : fallback, 1), 1000)
+}
+
+function readTrackingRowsOffset(value) {
+  const offset = Number(value)
+
+  return Math.max(Number.isFinite(offset) ? offset : 0, 0)
+}
+
+async function loadTrackingRowsFromSupabase(options = {}) {
   if (!hasSupabaseConfig()) return []
 
-  const params = new URLSearchParams({
-    select: '*',
-    order: 'order_sort.asc,row_id.asc',
-  })
-  const rows = await supabaseRequest(`/${supabaseTrackingTable}?${params.toString()}`)
+  const rows = []
+  const pageSize = readTrackingRowsLimit(options.limit)
+  let offset = readTrackingRowsOffset(options.offset)
+  const targetRowCount = pageSize + (options.includeHasMore ? 1 : 0)
 
-  return Array.isArray(rows) ? filterExcludedTrackingOrders(rows).map(normalizeTrackingDatabaseRow) : []
+  while (rows.length < targetRowCount) {
+    const limit = Math.min(pageSize, targetRowCount - rows.length)
+    const params = new URLSearchParams({
+      select: '*',
+      order: options.order ?? 'order_sort.desc,row_id.asc',
+      limit: String(limit),
+      offset: String(offset),
+    })
+    const pageRows = await supabaseRequest(`/${supabaseTrackingTable}?${params.toString()}`)
+
+    if (!Array.isArray(pageRows) || pageRows.length === 0) break
+
+    rows.push(...pageRows)
+
+    if (pageRows.length < limit) break
+
+    offset += limit
+  }
+
+  const normalizedRows = filterExcludedTrackingOrders(rows).map(normalizeTrackingDatabaseRow)
+
+  if (options.includeHasMore) {
+    return {
+      hasMoreRows: rows.length > pageSize,
+      rows: normalizedRows.slice(0, pageSize),
+    }
+  }
+
+  return normalizedRows
 }
 
 function normalizePaymentHistoryKey(value) {
@@ -1575,7 +1614,10 @@ async function loadShopifyOrders(firstPageParams) {
   }
 }
 
-async function buildShopifyTrackingReport(limit = 250) {
+async function buildShopifyTrackingReport(options = {}) {
+  const limit = options.shopifyLimit ?? options.limit
+  const rowsLimit = readTrackingRowsLimit(options.rowsLimit)
+  const rowsOffset = readTrackingRowsOffset(options.rowsOffset)
   const pageLimit = Math.min(Math.max(Number(limit) || 250, 1), 250)
   const createdAtMin = process.env.SHOPIFY_TRACKING_CREATED_AT_MIN
   const fields = [
@@ -1619,17 +1661,34 @@ async function buildShopifyTrackingReport(limit = 250) {
   const rowsWithShopifyStatusCount = rowsWithStatuses.filter((row) => row.statusSource === 'shopify').length
   const rowsWithDeliveryDateCount = rowsWithStatuses.filter((row) => row.deliveryDate).length
   let databaseRows = []
+  let hasMoreRows = false
   let databaseSynced = false
   let databaseError = ''
   const updatedAt = new Date().toISOString()
 
   try {
     databaseSynced = await upsertTrackingRowsToSupabase(rowsWithStatuses, updatedAt)
-    databaseRows = databaseSynced ? await loadTrackingRowsFromSupabase() : []
+    const databasePage = databaseSynced
+      ? await loadTrackingRowsFromSupabase({
+        limit: rowsLimit,
+        offset: rowsOffset,
+        includeHasMore: true,
+      })
+      : { rows: [], hasMoreRows: false }
+
+    databaseRows = databasePage.rows
+    hasMoreRows = databasePage.hasMoreRows
   } catch (error) {
     databaseError = error.message
   }
-  const responseRows = databaseRows.length > 0 ? databaseRows : rowsWithStatuses
+  const responseRows = databaseRows.length > 0
+    ? databaseRows
+    : rowsWithStatuses
+      .sort((left, right) => readOrderSort(right.orderNumber) - readOrderSort(left.orderNumber))
+      .slice(rowsOffset, rowsOffset + rowsLimit)
+  if (databaseRows.length === 0) {
+    hasMoreRows = rowsWithStatuses.length > rowsOffset + rowsLimit
+  }
 
   return {
     source: databaseRows.length > 0 ? 'supabase' : 'shopify',
@@ -1645,8 +1704,11 @@ async function buildShopifyTrackingReport(limit = 250) {
     rowsWithDeliveryDateCount,
     uspsTrackingEnabled: Boolean(process.env.USPS_WEBTOOLS_USER_ID) && process.env.USPS_TRACKING_ENABLED !== '0',
     databaseSynced,
-    databaseRows: databaseRows.length,
+    databaseRows: responseRows.length,
     databaseError,
+    rowsLimit,
+    rowsOffset,
+    hasMoreRows,
     rows: responseRows,
   }
 }
@@ -3223,7 +3285,14 @@ const server = createServer(async (request, response) => {
   if (requestUrl.pathname === '/api/shopify/tracking' && request.method === 'GET') {
     const forceRefresh = requestUrl.searchParams.get('refresh') === '1'
     const limit = requestUrl.searchParams.get('limit') ?? '250'
-    const cacheKey = `${limit}:${process.env.SHOPIFY_TRACKING_CREATED_AT_MIN ?? 'all'}`
+    const rowsLimit = readTrackingRowsLimit(requestUrl.searchParams.get('rowsLimit') ?? '1000')
+    const rowsOffset = readTrackingRowsOffset(requestUrl.searchParams.get('rowsOffset') ?? '0')
+    const cacheKey = [
+      limit,
+      rowsLimit,
+      rowsOffset,
+      process.env.SHOPIFY_TRACKING_CREATED_AT_MIN ?? 'all',
+    ].join(':')
     const cachedReport = trackingCache.get(cacheKey)
 
     if (forceRefresh) {
@@ -3241,7 +3310,11 @@ const server = createServer(async (request, response) => {
     let trackingPromise = inFlightTrackingReports.get(cacheKey)
 
     if (!trackingPromise) {
-      trackingPromise = buildShopifyTrackingReport(limit)
+      trackingPromise = buildShopifyTrackingReport({
+        shopifyLimit: limit,
+        rowsLimit,
+        rowsOffset,
+      })
       inFlightTrackingReports.set(cacheKey, trackingPromise)
     }
 

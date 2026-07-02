@@ -15,6 +15,7 @@ const trackingHeaders = [
 ]
 const overdueDaysThreshold = 5
 const trackingAutoRefreshMs = 5 * 60 * 1000
+const trackingRowsPageSize = 1000
 const trackingBusinessTimeZone = 'America/New_York'
 const trackingBusinessDateFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: trackingBusinessTimeZone,
@@ -114,15 +115,33 @@ function getNormalizedTrackingStatus(value) {
 }
 
 function Tracking() {
-  const [report, setReport] = useState({
+  const emptyReport = {
     source: 'shopify',
     rows: [],
     orderCount: 0,
     rowsWithStatusCount: 0,
+    rowsLimit: trackingRowsPageSize,
+    rowsOffset: 0,
+    hasMoreRows: false,
     updatedAt: null,
+  }
+  const [report, setReport] = useState({
+    ...emptyReport,
   })
+  const [historyReport, setHistoryReport] = useState({
+    ...emptyReport,
+    rowsOffset: trackingRowsPageSize,
+  })
+  const [activeTrackingView, setActiveTrackingView] = useState('recent')
+  const [historyPageIndex, setHistoryPageIndex] = useState(0)
   const [status, setStatus] = useState('loading')
+  const [historyStatus, setHistoryStatus] = useState('idle')
   const [error, setError] = useState('')
+  const [historyError, setHistoryError] = useState('')
+  const historyRowsOffset = (historyPageIndex + 1) * trackingRowsPageSize
+  const activeReport = activeTrackingView === 'history' ? historyReport : report
+  const activeStatus = activeTrackingView === 'history' ? historyStatus : status
+  const activeError = activeTrackingView === 'history' ? historyError : error
 
   useEffect(() => {
     let isMounted = true
@@ -133,7 +152,11 @@ function Tracking() {
         setStatus('loading')
       }
 
-      return loadShopifyTracking(options)
+      return loadShopifyTracking({
+        ...options,
+        rowsLimit: trackingRowsPageSize,
+        rowsOffset: 0,
+      })
         .then((data) => {
           if (!isMounted) return
           setReport(data)
@@ -158,11 +181,47 @@ function Tracking() {
     }
   }, [])
 
+  useEffect(() => {
+    if (activeTrackingView !== 'history') return
+    if (historyReport.rows.length > 0 && historyReport.rowsOffset === historyRowsOffset) return
+
+    loadHistoryPage(historyPageIndex)
+  }, [activeTrackingView, historyPageIndex, historyReport.rows.length, historyReport.rowsOffset, historyRowsOffset])
+
+  function loadHistoryPage(pageIndex, options = {}) {
+    const rowsOffset = (pageIndex + 1) * trackingRowsPageSize
+
+    setHistoryStatus('loading')
+    setHistoryError('')
+
+    return loadShopifyTracking({
+      ...options,
+      rowsLimit: trackingRowsPageSize,
+      rowsOffset,
+    })
+      .then((data) => {
+        setHistoryReport(data)
+        setHistoryStatus('ready')
+      })
+      .catch((loadError) => {
+        setHistoryError(loadError.message)
+        setHistoryStatus('error')
+      })
+  }
+
   function refreshTracking() {
+    if (activeTrackingView === 'history') {
+      loadHistoryPage(historyPageIndex, { forceRefresh: true })
+      return
+    }
+
     setStatus('loading')
     setError('')
-
-    loadShopifyTracking({ forceRefresh: true })
+    loadShopifyTracking({
+      forceRefresh: true,
+      rowsLimit: trackingRowsPageSize,
+      rowsOffset: 0,
+    })
       .then((data) => {
         setReport(data)
         setStatus('ready')
@@ -174,7 +233,15 @@ function Tracking() {
   }
 
   function refreshTrackingFromCache() {
-    loadShopifyTracking()
+    if (activeTrackingView === 'history') {
+      loadHistoryPage(historyPageIndex)
+      return
+    }
+
+    loadShopifyTracking({
+      rowsLimit: trackingRowsPageSize,
+      rowsOffset: 0,
+    })
       .then((data) => {
         setReport(data)
         setStatus('ready')
@@ -194,7 +261,7 @@ function Tracking() {
       progress: { label: 'In progress', count: 0, className: 'progress' },
       unknown: { label: 'No status', count: 0, className: 'unknown' },
     }
-    const rowsWithAge = report.rows.map((row) => {
+    const rowsWithAge = activeReport.rows.map((row) => {
       const normalizedStatus = getNormalizedTrackingStatus(row.status)
       const ageStartDate = parseTrackingDate(row.dateShipped || row.date)
       const daysOpen = normalizedStatus === 'delivered'
@@ -234,7 +301,7 @@ function Tracking() {
       failedRows: rowsWithAge.filter((row) => row.normalizedStatus === 'failed'),
       activeRows,
     }
-  }, [report.rows])
+  }, [activeReport.rows])
 
   return (
     <section className="route-view" aria-label="Tracking dashboard">
@@ -246,11 +313,11 @@ function Tracking() {
       </div>
 
       <div className="report-filters" aria-label="Tracking actions">
-        <span className="filter-label">{getTrackingSourceLabel(report.source)}</span>
-        <span className="timezone-pill">{report.uspsTrackingEnabled ? 'USPS live enabled' : 'USPS links only'}</span>
+        <span className="filter-label">{getTrackingSourceLabel(activeReport.source)}</span>
+        <span className="timezone-pill">{activeReport.uspsTrackingEnabled ? 'USPS live enabled' : 'USPS links only'}</span>
         <button
           className="filter-button"
-          disabled={status === 'loading'}
+          disabled={activeStatus === 'loading'}
           type="button"
           onClick={refreshTrackingFromCache}
         >
@@ -258,7 +325,7 @@ function Tracking() {
         </button>
         <button
           className="filter-button"
-          disabled={status === 'loading'}
+          disabled={activeStatus === 'loading'}
           type="button"
           onClick={refreshTracking}
         >
@@ -266,9 +333,28 @@ function Tracking() {
         </button>
       </div>
 
-      {status === 'error' && <div className="report-alert">{error}</div>}
+      <nav className="home-view-tabs tracking-view-tabs" aria-label="Tracking views">
+        <button
+          type="button"
+          className={activeTrackingView === 'recent' ? 'active' : ''}
+          onClick={() => setActiveTrackingView('recent')}
+        >
+          <span>Recent</span>
+          <strong>{report.rows.length}</strong>
+        </button>
+        <button
+          type="button"
+          className={activeTrackingView === 'history' ? 'active' : ''}
+          onClick={() => setActiveTrackingView('history')}
+        >
+          <span>History</span>
+          <strong>{historyReport.rows.length}</strong>
+        </button>
+      </nav>
 
-      {status !== 'loading' && (
+      {activeStatus === 'error' && <div className="report-alert">{activeError}</div>}
+
+      {activeStatus !== 'loading' && (
         <section className="tracking-analytics" aria-label="Tracking analytics">
           <div className="tracking-analytics-hero">
             <div>
@@ -299,7 +385,7 @@ function Tracking() {
             <article className="tracking-chart-card">
               <div className="tracking-card-heading">
                 <h2>Status Overview</h2>
-                <span>{report.rows.length} rows</span>
+                <span>{activeReport.rows.length} rows</span>
               </div>
               <div className="tracking-status-chart">
                 {analytics.statusGroups.map((group) => (
@@ -364,6 +450,38 @@ function Tracking() {
       )}
 
       <div className="table-panel tracking-panel">
+        {activeTrackingView === 'history' && (
+          <div className="tracking-history-controls">
+            <div>
+              <strong>
+                Rows
+                {' '}
+                {historyRowsOffset + 1}
+                -
+                {historyRowsOffset + historyReport.rows.length}
+              </strong>
+              <span>Showing older tracking records in batches of {trackingRowsPageSize}</span>
+            </div>
+            <div>
+              <button
+                className="filter-button"
+                disabled={historyStatus === 'loading' || historyPageIndex === 0}
+                type="button"
+                onClick={() => setHistoryPageIndex((currentPage) => Math.max(0, currentPage - 1))}
+              >
+                Newer
+              </button>
+              <button
+                className="filter-button"
+                disabled={historyStatus === 'loading' || !historyReport.hasMoreRows}
+                type="button"
+                onClick={() => setHistoryPageIndex((currentPage) => currentPage + 1)}
+              >
+                Older
+              </button>
+            </div>
+          </div>
+        )}
         <div className="table-shell">
           <table className="client-table tracking-table">
             <thead>
@@ -381,17 +499,17 @@ function Tracking() {
               </tr>
             </thead>
             <tbody>
-              {status === 'loading' && (
+              {activeStatus === 'loading' && (
                 <tr className="empty-row">
                   <td colSpan={trackingHeaders.length}>Loading Shopify orders...</td>
                 </tr>
               )}
-              {status !== 'loading' && report.rows.length === 0 && (
+              {activeStatus !== 'loading' && activeReport.rows.length === 0 && (
                 <tr className="empty-row">
                   <td colSpan={trackingHeaders.length}>No Shopify orders found</td>
                 </tr>
               )}
-              {status !== 'loading' && report.rows.map((row) => (
+              {activeStatus !== 'loading' && activeReport.rows.map((row) => (
                 <tr key={row.rowId}>
                   <td className="tracking-order-cell">{displayCell(row.orderNumber)}</td>
                   <td>{displayCell(row.suplifulOrder)}</td>

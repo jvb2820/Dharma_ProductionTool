@@ -1,4 +1,12 @@
-const sessionCacheKey = 'shopify-tracking-report:v1'
+const sessionCacheKey = 'shopify-tracking-report:v2'
+const defaultRowsLimit = 1000
+
+function getSessionCacheKey(options = {}) {
+  const rowsLimit = options.rowsLimit ?? defaultRowsLimit
+  const rowsOffset = options.rowsOffset ?? 0
+
+  return `${sessionCacheKey}:${rowsLimit}:${rowsOffset}`
+}
 
 function normalizeTrackingRow(row) {
   return {
@@ -19,9 +27,9 @@ function normalizeTrackingRow(row) {
   }
 }
 
-function readCachedTracking() {
+function readCachedTracking(options = {}) {
   try {
-    const cachedValue = window.sessionStorage.getItem(sessionCacheKey)
+    const cachedValue = window.sessionStorage.getItem(getSessionCacheKey(options))
 
     return cachedValue ? JSON.parse(cachedValue) : null
   } catch {
@@ -29,9 +37,9 @@ function readCachedTracking() {
   }
 }
 
-function writeCachedTracking(report) {
+function writeCachedTracking(report, options = {}) {
   try {
-    window.sessionStorage.setItem(sessionCacheKey, JSON.stringify(report))
+    window.sessionStorage.setItem(getSessionCacheKey(options), JSON.stringify(report))
   } catch {
     // Tracking can still load normally if session storage is unavailable.
   }
@@ -48,7 +56,7 @@ export async function loadShopifyTracking(options = {}) {
     }
   }
 
-  const cachedReport = options.forceRefresh ? null : readCachedTracking()
+  const cachedReport = options.forceRefresh ? null : readCachedTracking(options)
   if (cachedReport) {
     return {
       ...cachedReport,
@@ -60,6 +68,8 @@ export async function loadShopifyTracking(options = {}) {
   if (options.forceRefresh) {
     requestUrl.searchParams.set('refresh', '1')
   }
+  requestUrl.searchParams.set('rowsLimit', String(options.rowsLimit ?? defaultRowsLimit))
+  requestUrl.searchParams.set('rowsOffset', String(options.rowsOffset ?? 0))
 
   const response = await fetch(requestUrl, {
     cache: options.forceRefresh ? 'no-store' : 'default',
@@ -94,11 +104,14 @@ export async function loadShopifyTracking(options = {}) {
     rowsWithShopifyStatusCount: payload.rowsWithShopifyStatusCount ?? 0,
     rowsWithDeliveryDateCount: payload.rowsWithDeliveryDateCount ?? 0,
     uspsTrackingEnabled: Boolean(payload.uspsTrackingEnabled),
+    rowsLimit: payload.rowsLimit ?? options.rowsLimit ?? defaultRowsLimit,
+    rowsOffset: payload.rowsOffset ?? options.rowsOffset ?? 0,
+    hasMoreRows: Boolean(payload.hasMoreRows),
     updatedAt: payload.updatedAt ?? new Date().toISOString(),
     cacheSource: payload.cacheSource ?? 'network',
   }
 
-  writeCachedTracking(report)
+  writeCachedTracking(report, options)
 
   return report
 }
