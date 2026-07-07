@@ -2177,6 +2177,44 @@
   line-height: 1;
 }
 
+.agent-confirmed-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.agent-export-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid #00a4bd;
+  border-radius: 4px;
+  color: #005c53;
+  background: #e5f8fb;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.agent-export-button:hover:not(:disabled),
+.agent-export-button:focus-visible {
+  border-color: #005c53;
+  background: #d2f1f5;
+}
+
+.agent-export-button:disabled {
+  border-color: #cbd6e2;
+  color: #7c98b6;
+  background: #f6f9fc;
+  cursor: default;
+}
+
 .agent-confirmed-header strong span {
   color: #516f90;
   font-size: 0.76rem;
@@ -2299,8 +2337,10 @@
 }
 
 .report-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   width: min(100%, 620px);
-  max-height: min(720px, calc(100vh - 48px));
+  max-height: min(720px, calc(100dvh - 48px));
   overflow: hidden;
   border: 1px solid #cbd6e2;
   border-top: 4px solid #9b1111;
@@ -2359,10 +2399,13 @@
 
 .not-called-list {
   display: grid;
+  align-content: start;
   gap: 8px;
-  max-height: calc(100vh - 190px);
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 14px;
+  scroll-padding: 14px;
   background: #fff;
 }
 
@@ -2966,6 +3009,10 @@
     align-items: stretch;
     flex-direction: column;
     gap: 6px;
+  }
+
+  .agent-confirmed-actions {
+    justify-content: space-between;
   }
 
   .agent-assignment-row {

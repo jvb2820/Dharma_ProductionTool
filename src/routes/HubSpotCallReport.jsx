@@ -242,6 +242,25 @@ function getMeetingDescription(slot) {
   ].filter(Boolean).join('')
 }
 
+function csvEscape(value) {
+  const stringValue = String(value ?? '')
+
+  if (/[",\r\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`
+  }
+
+  return stringValue
+}
+
+function slugifyFilename(value) {
+  return String(value ?? 'not-called')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'not-called'
+}
+
 function isCancelledMeeting(value) {
   return /\bcancell?ed\b|\bcancelad[ao]\b|\bcancel/i.test(String(value ?? ''))
 }
@@ -604,6 +623,33 @@ function HubSpotCallReport() {
     setNotCalledDialog(null)
   }
 
+  function exportNotCalledEmails(title, rows) {
+    const headers = ['Email', 'Client Name', 'Phone Number', 'Activity Date', 'Meeting Host']
+    const csvRows = [
+      headers,
+      ...rows.map((slot) => [
+        slot.clientEmail || '',
+        slot.clientName || '',
+        slot.phoneNumber || '',
+        formatActivityDate(slot),
+        slot.meetingHost || 'Unassigned',
+      ]),
+    ]
+    const csvContent = csvRows
+      .map((row) => row.map(csvEscape).join(','))
+      .join('\r\n')
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' })
+    const downloadUrl = window.URL.createObjectURL(blob)
+    const downloadLink = document.createElement('a')
+
+    downloadLink.href = downloadUrl
+    downloadLink.download = `${slugifyFilename(title)}-not-called-emails-${report.reportDate || selectedDate}.csv`
+    document.body.appendChild(downloadLink)
+    downloadLink.click()
+    downloadLink.remove()
+    window.URL.revokeObjectURL(downloadUrl)
+  }
+
   return (
     <section className="route-view" aria-label="Daily appointments">
       <div className="report-toolbar">
@@ -738,15 +784,25 @@ function HubSpotCallReport() {
               <article className="agent-confirmed-card" key={agent.id}>
                 <div className="agent-confirmed-header">
                   <h3 title={agent.callerName}>{agent.callerName}</h3>
-                  <strong>
-                    {agent.totalAppointments}
-                    <span>
-                      {' '}
-                      of
-                      {' '}
-                      {scheduleRows.length}
-                    </span>
-                  </strong>
+                  <div className="agent-confirmed-actions">
+                    <button
+                      className="agent-export-button"
+                      disabled={agent.notCalled === 0}
+                      type="button"
+                      onClick={() => exportNotCalledEmails(agent.callerName, agent.notCalledRows)}
+                    >
+                      Export
+                    </button>
+                    <strong>
+                      {agent.totalAppointments}
+                      <span>
+                        {' '}
+                        of
+                        {' '}
+                        {scheduleRows.length}
+                      </span>
+                    </strong>
+                  </div>
                 </div>
                 <div className="agent-confirmed-bar" title={`${agent.totalAppointments} of ${scheduleRows.length} appointments`}>
                   <span style={{ width: `${agent.confirmedShare}%` }} />
@@ -812,15 +868,28 @@ function HubSpotCallReport() {
                   </h3>
                   <p>Juan team previous-day calls for Paula Alfonso and Maria Sandoval.</p>
                 </div>
-                <strong>
-                  {juanPreviousDayCalling.totalAppointments}
-                  <span>
-                    {' '}
-                    of
-                    {' '}
-                    {scheduleRows.length}
-                  </span>
-                </strong>
+                <div className="agent-confirmed-actions">
+                  <button
+                    className="agent-export-button"
+                    disabled={juanPreviousDayCalling.notCalled === 0}
+                    type="button"
+                    onClick={() => exportNotCalledEmails(
+                      'Juan Camilo Previous Day',
+                      juanPreviousDayCalling.notCalledRows,
+                    )}
+                  >
+                    Export
+                  </button>
+                  <strong>
+                    {juanPreviousDayCalling.totalAppointments}
+                    <span>
+                      {' '}
+                      of
+                      {' '}
+                      {scheduleRows.length}
+                    </span>
+                  </strong>
+                </div>
               </div>
               <div className="agent-confirmed-bar" title={`${juanPreviousDayCalling.totalAppointments} of ${scheduleRows.length} appointments`}>
                 <span style={{ width: `${juanPreviousDayCalling.confirmedShare}%` }} />
