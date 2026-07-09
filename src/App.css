@@ -2024,6 +2024,62 @@
   opacity: 0.58;
 }
 
+.call-upload-button {
+  position: relative;
+  display: inline-flex;
+  align-self: center;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #00a4bd;
+  color: #005c53;
+  background: #e5f8fb;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.call-upload-button:hover,
+.call-upload-button:focus-within {
+  border-color: #005c53;
+  background: #d2f1f5;
+}
+
+.call-upload-button:has(input:disabled) {
+  border-color: #cbd6e2;
+  color: #7c98b6;
+  background: #f6f9fc;
+  cursor: not-allowed;
+}
+
+.call-upload-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.call-upload-status {
+  margin: -6px 0 16px;
+  padding: 9px 11px;
+  border: 1px solid #b7e3bf;
+  color: #06451b;
+  background: #effbea;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.call-upload-status.error {
+  border-color: #f1b7ae;
+  color: #9b1111;
+  background: #fff0ee;
+}
+
 .analytics-summary-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import * as XLSX from 'xlsx'
 import { loadHubSpotCallReport } from '../services/hubspotCallReport'
 
 const reportTimeZone = 'America/New_York'
@@ -265,6 +266,57 @@ function isCancelledMeeting(value) {
   return /\bcancell?ed\b|\bcancelad[ao]\b|\bcancel/i.test(String(value ?? ''))
 }
 
+function normalizePhoneDigits(value) {
+  return String(value ?? '').replace(/\D/g, '')
+}
+
+function getAppointmentMatchNumbers(row) {
+  const emailLocalPart = String(row.clientEmail ?? '').split('@')[0]
+
+  return [
+    normalizePhoneDigits(emailLocalPart),
+    normalizePhoneDigits(row.phoneNumber),
+  ].filter(Boolean)
+}
+
+function getExcelCellValue(row, columnIndex) {
+  if (!Array.isArray(row)) return ''
+
+  return row[columnIndex] ?? ''
+}
+
+function parseUploadedCallNumbers(fileBuffer) {
+  const workbook = XLSX.read(fileBuffer, {
+    cellDates: false,
+    raw: false,
+    type: 'array',
+  })
+  const firstSheetName = workbook.SheetNames[0]
+  const worksheet = workbook.Sheets[firstSheetName]
+  const rows = worksheet
+    ? XLSX.utils.sheet_to_json(worksheet, {
+      blankrows: false,
+      defval: '',
+      header: 1,
+      raw: false,
+    })
+    : []
+  const headerRowIndex = rows.findIndex((row) =>
+    Array.isArray(row) && row.some((cell) =>
+      String(cell ?? '').trim().toLowerCase() === 'to',
+    ),
+  )
+  const toColumnIndex = headerRowIndex >= 0
+    ? rows[headerRowIndex].findIndex((cell) => String(cell ?? '').trim().toLowerCase() === 'to')
+    : 4
+  const dataRows = headerRowIndex >= 0 ? rows.slice(headerRowIndex + 1) : rows
+  const numbers = dataRows
+    .map((row) => normalizePhoneDigits(getExcelCellValue(row, toColumnIndex)))
+    .filter(Boolean)
+
+  return new Set(numbers)
+}
+
 function HubSpotCallReport() {
   const topScrollRef = useRef(null)
   const tableScrollRef = useRef(null)
@@ -283,6 +335,8 @@ function HubSpotCallReport() {
   const [loadingElapsedMs, setLoadingElapsedMs] = useState(0)
   const [averageRuntimeMs, setAverageRuntimeMs] = useState(() => readAverageRuntimeMs())
   const [notCalledDialog, setNotCalledDialog] = useState(null)
+  const [uploadedCallNumbers, setUploadedCallNumbers] = useState(() => new Set())
+  const [uploadStatus, setUploadStatus] = useState(null)
   const [outboundAssignmentOverrides, setOutboundAssignmentOverrides] = useState(() => readOutboundAssignmentOverrides())
   const [draftOutboundAssignmentOverrides, setDraftOutboundAssignmentOverrides] = useState(() => readOutboundAssignmentOverrides())
   const averageRuntimeRef = useRef(averageRuntimeMs)
@@ -315,6 +369,8 @@ function HubSpotCallReport() {
 
     setError('')
     setLoadingElapsedMs(0)
+    setUploadedCallNumbers(new Set())
+    setUploadStatus(null)
     setSelectedDate(nextDate)
   }
 
@@ -327,6 +383,8 @@ function HubSpotCallReport() {
     setDraftOutboundAssignmentOverrides(nextOverrides)
     setStatus('loading')
     setError('')
+    setUploadedCallNumbers(new Set())
+    setUploadStatus(null)
     setLoadingStartedAt(startedAt)
     setLoadingElapsedMs(0)
 
@@ -364,6 +422,9 @@ function HubSpotCallReport() {
       const callerName = row.callerName
       const outboundExempt = Boolean(row.outboundExempt)
       const cancelled = isCancelledMeeting(meetingName)
+      const uploadedCallMatched = getAppointmentMatchNumbers(row)
+        .some((phoneNumber) => uploadedCallNumbers.has(phoneNumber))
+      const resolvedCallerName = callerName || (uploadedCallMatched ? 'Uploaded Excel' : '')
 
       return {
         rowId: row.rowId,
@@ -379,14 +440,20 @@ function HubSpotCallReport() {
         createdAt: row.createdAt,
         scheduledAt: row.scheduledAt,
         outboundExempt,
-        callerName,
-        qualifyingCallers: row.qualifyingCallers ?? (callerName ? [callerName] : []),
+        callerName: resolvedCallerName,
+        uploadedCallMatched,
+        qualifyingCallers: [
+          ...(row.qualifyingCallers ?? (callerName ? [callerName] : [])),
+          ...(uploadedCallMatched ? ['Uploaded Excel'] : []),
+        ],
         previousDayCallerName: row.previousDayCallerName ?? '',
         previousDayCallers: row.previousDayCallers ?? [],
         previousDayCalledDetail: row.previousDayCalledDetail ?? '',
-        called: callerName ? 'Called' : outboundExempt ? 'Not Required' : 'Not Called',
+        called: resolvedCallerName ? 'Called' : outboundExempt ? 'Not Required' : 'Not Called',
         calledDetail: callerName
           ? row.calledDetail || 'Outbound caller found before the appointment'
+          : uploadedCallMatched
+            ? 'Matched by uploaded Excel to number'
           : outboundExempt
             ? row.calledDetail || 'Outbound call not required: meeting was created within 2 hours of the appointment'
             : row.calledDetail || 'No qualifying outbound call found',
@@ -396,7 +463,11 @@ function HubSpotCallReport() {
           : 'Meeting name does not indicate cancellation',
       }
     })
-  }, [report.rows])
+  }, [report.rows, uploadedCallNumbers])
+
+  const uploadedMatchedAppointmentCount = useMemo(() => {
+    return scheduleRows.filter((row) => row.uploadedCallMatched).length
+  }, [scheduleRows])
 
   const reportDateLabel = report.reportDate ? formatDate(report.reportDate) : ''
   const reportWeekday = report.reportDate ? formatWeekday(report.reportDate) : 'Loading'
@@ -445,7 +516,7 @@ function HubSpotCallReport() {
         agentNames: [],
       }, missingCallerName)
       const assignedCallerCalled = assignedGroup
-        ? (row.qualifyingCallers ?? []).some((callerName) =>
+        ? row.uploadedCallMatched || (row.qualifyingCallers ?? []).some((callerName) =>
           normalizePersonName(callerName) === normalizePersonName(caller.callerName),
         )
         : row.called === 'Called'
@@ -517,7 +588,7 @@ function HubSpotCallReport() {
 
       const meetingHost = agentRows.meetingHosts.get(normalizePersonName(rosterAgentName))
       const callerNames = shouldUseCurrentDayCalling ? row.qualifyingCallers : row.previousDayCallers
-      const previousDayCalledByAssignedCaller = (callerNames ?? [])
+      const previousDayCalledByAssignedCaller = row.uploadedCallMatched || (callerNames ?? [])
         .some((callerName) => normalizePersonName(callerName) === assignedCallerKey)
 
       agentRows.totalAppointments += 1
@@ -650,6 +721,34 @@ function HubSpotCallReport() {
     window.URL.revokeObjectURL(downloadUrl)
   }
 
+  function handleCallUpload(event) {
+    const file = event.target.files?.[0]
+
+    if (!file) return
+
+    file.arrayBuffer()
+      .then((fileBuffer) => {
+        const numbers = parseUploadedCallNumbers(fileBuffer)
+
+        setUploadedCallNumbers(numbers)
+        setUploadStatus({
+          fileName: file.name,
+          numberCount: numbers.size,
+        })
+      })
+      .catch((uploadError) => {
+        setUploadedCallNumbers(new Set())
+        setUploadStatus({
+          error: uploadError.message || 'Unable to read the uploaded Excel file.',
+          fileName: file.name,
+          numberCount: 0,
+        })
+      })
+      .finally(() => {
+        event.target.value = ''
+      })
+  }
+
   return (
     <section className="route-view" aria-label="Daily appointments">
       <div className="report-toolbar">
@@ -749,7 +848,24 @@ function HubSpotCallReport() {
             >
               Refresh Live
             </button>
+            <label className="call-upload-button">
+              Upload Excel
+              <input
+                accept=".xlsx,.xls,.csv"
+                aria-label="Upload Excel call report"
+                disabled={status === 'loading' || scheduleRows.length === 0}
+                type="file"
+                onChange={handleCallUpload}
+              />
+            </label>
           </div>
+          {uploadStatus && (
+            <div className={`call-upload-status ${uploadStatus.error ? 'error' : ''}`}>
+              {uploadStatus.error
+                ? uploadStatus.error
+                : `${uploadStatus.fileName}: ${uploadedMatchedAppointmentCount} appointment${uploadedMatchedAppointmentCount === 1 ? '' : 's'} matched from ${uploadStatus.numberCount} uploaded number${uploadStatus.numberCount === 1 ? '' : 's'}.`}
+            </div>
+          )}
           <div className="analytics-summary-grid">
             <div className="analytics-total-card appointments">
               <span>Appointments</span>
