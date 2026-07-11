@@ -114,6 +114,66 @@ function getNormalizedTrackingStatus(value) {
   return 'unknown'
 }
 
+function getTrackingOrderKey(row) {
+  return String(row.orderNumber || row.rowId || '').trim()
+}
+
+function getOrderWarningSummary(rows) {
+  const ordersByKey = new Map()
+
+  rows.forEach((row) => {
+    const orderKey = getTrackingOrderKey(row)
+    if (!orderKey) return
+
+    const existingOrder = ordersByKey.get(orderKey)
+    const nextOrder = existingOrder ?? {
+      ...row,
+      failed: false,
+      overdue: false,
+      active: false,
+      businessDaysOpen: 0,
+      status: '',
+    }
+
+    nextOrder.failed = nextOrder.failed || row.normalizedStatus === 'failed'
+    nextOrder.overdue = nextOrder.overdue
+      || (row.normalizedStatus !== 'delivered' && row.businessDaysOpen > overdueDaysThreshold)
+    nextOrder.active = nextOrder.active
+      || (row.normalizedStatus !== 'delivered' && row.normalizedStatus !== 'failed')
+
+    const shouldUseRowDetails = row.normalizedStatus === 'failed'
+      || row.businessDaysOpen > nextOrder.businessDaysOpen
+
+    if (shouldUseRowDetails) {
+      nextOrder.status = row.status
+      nextOrder.statusSource = row.statusSource
+      nextOrder.businessDaysOpen = row.businessDaysOpen
+      nextOrder.name = row.name
+    }
+
+    ordersByKey.set(orderKey, nextOrder)
+  })
+
+  const orders = [...ordersByKey.values()]
+  const warningOrders = orders
+    .filter((order) => order.failed || order.overdue)
+    .map((order) => ({
+      ...order,
+      status: order.failed ? (order.status || 'Failed delivery') : order.status,
+    }))
+    .sort((left, right) =>
+      right.businessDaysOpen - left.businessDaysOpen
+      || left.orderNumber.localeCompare(right.orderNumber),
+    )
+
+  return {
+    activeOrders: orders.filter((order) => order.active),
+    failedOrders: orders.filter((order) => order.failed),
+    overdueOrders: orders.filter((order) => order.overdue),
+    warningOrders,
+  }
+}
+
 function Tracking() {
   const emptyReport = {
     source: 'shopify',
@@ -276,30 +336,13 @@ function Tracking() {
         businessDaysOpen: daysOpen,
       }
     })
-    const overdueRows = rowsWithAge
-      .filter((row) => row.normalizedStatus !== 'delivered' && row.businessDaysOpen > overdueDaysThreshold)
-      .sort((left, right) => right.businessDaysOpen - left.businessDaysOpen)
-    const warningRows = rowsWithAge
-      .filter((row) =>
-        row.normalizedStatus === 'failed'
-        || (row.normalizedStatus !== 'delivered' && row.businessDaysOpen > overdueDaysThreshold),
-      )
-      .sort((left, right) =>
-        right.businessDaysOpen - left.businessDaysOpen
-        || left.orderNumber.localeCompare(right.orderNumber),
-      )
-    const activeRows = rowsWithAge.filter((row) =>
-      row.normalizedStatus !== 'delivered' && row.normalizedStatus !== 'failed',
-    )
+    const warningSummary = getOrderWarningSummary(rowsWithAge)
     const maxStatusCount = Math.max(...Object.values(statusGroups).map((group) => group.count), 1)
 
     return {
       statusGroups: Object.values(statusGroups),
       maxStatusCount,
-      overdueRows,
-      warningRows,
-      failedRows: rowsWithAge.filter((row) => row.normalizedStatus === 'failed'),
-      activeRows,
+      ...warningSummary,
     }
   }, [activeReport.rows])
 
@@ -359,9 +402,9 @@ function Tracking() {
           <div className="tracking-analytics-hero">
             <div>
               <span>Delivery Risk</span>
-              <strong>{analytics.overdueRows.length}</strong>
+              <strong>{analytics.overdueOrders.length}</strong>
               <small>
-                Open shipments over
+                Open orders over
                 {' '}
                 {overdueDaysThreshold}
                 {' '}
@@ -377,7 +420,7 @@ function Tracking() {
               <div className="tracking-risk-stripes" />
             </div>
             <div className="tracking-risk-meter" aria-hidden="true">
-              <span style={{ width: `${Math.min(100, analytics.overdueRows.length * 8)}%` }} />
+              <span style={{ width: `${Math.min(100, analytics.overdueOrders.length * 8)}%` }} />
             </div>
           </div>
 
@@ -405,28 +448,28 @@ function Tracking() {
             <article className="tracking-warning-card">
               <div className="tracking-card-heading">
                 <h2>Warnings</h2>
-                <span>{analytics.warningRows.length} items</span>
+                <span>{analytics.warningOrders.length} orders</span>
               </div>
               <div className="tracking-warning-summary">
                 <span>
-                  <strong>{analytics.failedRows.length}</strong>
+                  <strong>{analytics.failedOrders.length}</strong>
                   Failed delivery
                 </span>
                 <span>
-                  <strong>{analytics.activeRows.length}</strong>
-                  Open packages
+                  <strong>{analytics.activeOrders.length}</strong>
+                  Open orders
                 </span>
                 <span>
-                  <strong>{analytics.overdueRows.length}</strong>
+                  <strong>{analytics.overdueOrders.length}</strong>
                   Overdue
                 </span>
               </div>
               <div className="tracking-warning-list">
-                {analytics.warningRows.length === 0 && (
+                {analytics.warningOrders.length === 0 && (
                   <div className="tracking-warning-empty">No overdue or failed deliveries found.</div>
                 )}
-                {analytics.warningRows.map((row) => (
-                  <div className="tracking-warning-item" key={`${row.rowId}-warning`}>
+                {analytics.warningOrders.map((row) => (
+                  <div className="tracking-warning-item" key={`${getTrackingOrderKey(row)}-warning`}>
                     <div>
                       <strong>{row.orderNumber}</strong>
                       <span>{row.name || 'No name'}</span>
