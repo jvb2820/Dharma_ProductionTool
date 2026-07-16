@@ -96,11 +96,22 @@ function getTrackingBusinessToday(now = new Date()) {
 function countOpenDays(startDate, endDate = getTrackingBusinessToday()) {
   if (!startDate) return 0
 
-  const start = Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate())
+  const cursor = new Date(Date.UTC(
+    startDate.getUTCFullYear(),
+    startDate.getUTCMonth(),
+    startDate.getUTCDate() + 1,
+    12,
+  ))
   const end = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate())
-  const dayMs = 24 * 60 * 60 * 1000
+  let businessDays = 0
 
-  return Math.max(0, Math.floor((end - start) / dayMs))
+  while (cursor.getTime() <= end) {
+    const dayOfWeek = cursor.getUTCDay()
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) businessDays += 1
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+
+  return businessDays
 }
 
 function getNormalizedTrackingStatus(value) {
@@ -323,7 +334,7 @@ function Tracking() {
     }
     const rowsWithAge = activeReport.rows.map((row) => {
       const normalizedStatus = getNormalizedTrackingStatus(row.status)
-      const ageStartDate = parseTrackingDate(row.dateShipped || row.date)
+      const ageStartDate = parseTrackingDate(row.date)
       const daysOpen = normalizedStatus === 'delivered'
         ? 0
         : countOpenDays(ageStartDate)
@@ -408,7 +419,7 @@ function Tracking() {
                 {' '}
                 {overdueDaysThreshold}
                 {' '}
-                days
+                business days
               </small>
             </div>
             <div className="tracking-risk-graphic" aria-hidden="true">
@@ -481,7 +492,7 @@ function Tracking() {
                       <small>
                         {row.businessDaysOpen}
                         {' '}
-                        days
+                        business days
                       </small>
                     </div>
                   </div>

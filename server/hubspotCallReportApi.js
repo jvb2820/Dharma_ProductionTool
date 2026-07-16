@@ -459,11 +459,22 @@ function paymentDateToIso(value) {
 function countTrackingOpenDays(startDate, endDate = getTrackingBusinessToday()) {
   if (!startDate) return 0
 
-  const start = Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate())
+  const cursor = new Date(Date.UTC(
+    startDate.getUTCFullYear(),
+    startDate.getUTCMonth(),
+    startDate.getUTCDate() + 1,
+    12,
+  ))
   const end = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate())
-  const dayMs = 24 * 60 * 60 * 1000
+  let businessDays = 0
 
-  return Math.max(0, Math.floor((end - start) / dayMs))
+  while (cursor.getTime() <= end) {
+    const dayOfWeek = cursor.getUTCDay()
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) businessDays += 1
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+
+  return businessDays
 }
 
 function isDeliveredStatus(value) {
@@ -774,7 +785,7 @@ function buildTrackingDatabaseRow(row, sourceUpdatedAt) {
   const orderDate = displayDateToIso(row.date)
   const shippedDate = displayDateToIso(row.dateShipped)
   const deliveryDate = displayDateToIso(row.deliveryDate)
-  const ageStartDate = parseDisplayDate(row.dateShipped || row.date)
+  const ageStartDate = parseDisplayDate(row.date)
   const delivered = isDeliveredStatus(row.status)
   const daysOpen = delivered ? 0 : countTrackingOpenDays(ageStartDate)
 
