@@ -1,5 +1,6 @@
-const sessionCacheKey = 'shopify-tracking-report:v3'
+const sessionCacheKey = 'shopify-tracking-report:v4'
 const defaultRowsLimit = 1000
+const sessionCacheTtlMs = 5 * 60 * 1000
 
 function getSessionCacheKey(options = {}) {
   const rowsLimit = options.rowsLimit ?? defaultRowsLimit
@@ -40,8 +41,19 @@ function shouldHideTrackingRow(row) {
 function readCachedTracking(options = {}) {
   try {
     const cachedValue = window.sessionStorage.getItem(getSessionCacheKey(options))
+    if (!cachedValue) return null
 
-    return cachedValue ? JSON.parse(cachedValue) : null
+    const cachedEntry = JSON.parse(cachedValue)
+    if (
+      !cachedEntry?.report
+      || !cachedEntry.cachedAt
+      || Date.now() - cachedEntry.cachedAt >= sessionCacheTtlMs
+    ) {
+      window.sessionStorage.removeItem(getSessionCacheKey(options))
+      return null
+    }
+
+    return cachedEntry.report
   } catch {
     return null
   }
@@ -49,7 +61,10 @@ function readCachedTracking(options = {}) {
 
 function writeCachedTracking(report, options = {}) {
   try {
-    window.sessionStorage.setItem(getSessionCacheKey(options), JSON.stringify(report))
+    window.sessionStorage.setItem(getSessionCacheKey(options), JSON.stringify({
+      cachedAt: Date.now(),
+      report,
+    }))
   } catch {
     // Tracking can still load normally if session storage is unavailable.
   }
@@ -66,7 +81,9 @@ export async function loadShopifyTracking(options = {}) {
     }
   }
 
-  const cachedReport = options.forceRefresh ? null : readCachedTracking(options)
+  const cachedReport = options.forceRefresh || options.skipSessionCache
+    ? null
+    : readCachedTracking(options)
   if (cachedReport) {
     return {
       ...cachedReport,

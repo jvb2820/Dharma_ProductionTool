@@ -232,7 +232,7 @@ function Tracking() {
 
     loadTracking({ showLoading: true })
     refreshInterval = window.setInterval(() => {
-      loadTracking()
+      loadTracking({ skipSessionCache: true })
     }, trackingAutoRefreshMs)
 
     return () => {
