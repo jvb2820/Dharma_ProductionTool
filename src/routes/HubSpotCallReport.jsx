@@ -70,6 +70,10 @@ function getDisplayPersonName(value) {
   return value
 }
 
+function getCallerLabel(value) {
+  return normalizePersonName(value) === 'juan camilo' ? 'Kevin' : value
+}
+
 function normalizeOutboundAssignmentOverrides(value) {
   return Object.entries(value ?? {}).reduce((lookup, [ownerName, assignedCallerName]) => {
     const displayName = getDisplayPersonName(assignedCallerName)
@@ -887,7 +891,7 @@ function HubSpotCallReport() {
                   >
                     {outboundCallerOptions.map((callerName) => (
                       <option key={callerName} value={callerName}>
-                        {callerName}
+                        {getCallerLabel(callerName)}
                       </option>
                     ))}
                   </select>
@@ -961,13 +965,13 @@ function HubSpotCallReport() {
             {confirmedCallsByAgent.map((agent) => (
               <article className="agent-confirmed-card" key={agent.id}>
                 <div className="agent-confirmed-header">
-                  <h3 title={agent.callerName}>{agent.callerName}</h3>
+                  <h3 title={getCallerLabel(agent.callerName)}>{getCallerLabel(agent.callerName)}</h3>
                   <div className="agent-confirmed-actions">
                     <button
                       className="agent-export-button"
                       disabled={agent.notCalled === 0}
                       type="button"
-                      onClick={() => exportNotCalledEmails(agent.callerName, agent.notCalledRows)}
+                      onClick={() => exportNotCalledEmails(getCallerLabel(agent.callerName), agent.notCalledRows)}
                     >
                       Export
                     </button>
@@ -985,7 +989,7 @@ function HubSpotCallReport() {
                 <div className="agent-confirmed-bar" title={`${agent.totalAppointments} of ${scheduleRows.length} appointments`}>
                   <span style={{ width: `${agent.confirmedShare}%` }} />
                 </div>
-                <div className="agent-assignment-table" role="table" aria-label={`${agent.callerName} appointments by agent`}>
+                <div className="agent-assignment-table" role="table" aria-label={`${getCallerLabel(agent.callerName)} appointments by agent`}>
                   <div className="agent-assignment-row heading" role="row">
                     <span role="columnheader">Agent</span>
                     <span role="columnheader">Total Appt. / Agent</span>
@@ -1023,7 +1027,7 @@ function HubSpotCallReport() {
                         disabled={agent.notCalled === 0}
                         type="button"
                         onClick={() => openNotCalledDialog(
-                          `${agent.callerName} meeting hosts - Not Called`,
+                          `${getCallerLabel(agent.callerName)} meeting hosts - Not Called`,
                           agent.notCalledRows,
                         )}
                       >
@@ -1036,15 +1040,15 @@ function HubSpotCallReport() {
               </article>
             ))}
             {juanPreviousDayCalling && (
-            <article className="agent-confirmed-card previous-day-analytics" aria-label="Juan Camilo previous day calling">
+            <article className="agent-confirmed-card previous-day-analytics" aria-label="Kevin previous day calling">
               <div className="agent-confirmed-header">
                 <div>
-                  <h3 title={`${juanPreviousDayCalling.callerName} previous day calling`}>
-                    {juanPreviousDayCalling.callerName}
+                  <h3 title={`${getCallerLabel(juanPreviousDayCalling.callerName)} previous day calling`}>
+                    {getCallerLabel(juanPreviousDayCalling.callerName)}
                     {' '}
                     Previous Day Calling
                   </h3>
-                  <p>Juan team previous-day calls for Paula Alfonso and Maria Sandoval.</p>
+                  <p>Kevin team previous-day calls for Paula Alfonso and Maria Sandoval.</p>
                 </div>
                 <div className="agent-confirmed-actions">
                   <button
@@ -1052,7 +1056,7 @@ function HubSpotCallReport() {
                     disabled={juanPreviousDayCalling.notCalled === 0}
                     type="button"
                     onClick={() => exportNotCalledEmails(
-                      'Juan Camilo Previous Day',
+                      'Kevin Previous Day',
                       juanPreviousDayCalling.notCalledRows,
                     )}
                   >
@@ -1072,7 +1076,7 @@ function HubSpotCallReport() {
               <div className="agent-confirmed-bar" title={`${juanPreviousDayCalling.totalAppointments} of ${scheduleRows.length} appointments`}>
                 <span style={{ width: `${juanPreviousDayCalling.confirmedShare}%` }} />
               </div>
-              <div className="agent-assignment-table" role="table" aria-label="Juan Camilo previous day calling by agent">
+              <div className="agent-assignment-table" role="table" aria-label="Kevin previous day calling by agent">
                 <div className="agent-assignment-row heading" role="row">
                   <span role="columnheader">Agent</span>
                   <span role="columnheader">Total Appt. / Agent</span>
@@ -1110,7 +1114,7 @@ function HubSpotCallReport() {
                       disabled={juanPreviousDayCalling.notCalled === 0}
                       type="button"
                       onClick={() => openNotCalledDialog(
-                        'Juan Camilo Previous Day - Not Called',
+                        'Kevin Previous Day - Not Called',
                         juanPreviousDayCalling.notCalledRows,
                       )}
                     >
