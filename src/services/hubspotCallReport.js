@@ -9,7 +9,7 @@ const agentRoster = [
 const reportTimes = ['2:00 AM', '2:20 AM', '2:30 AM', '2:40 AM', '3:00 AM', '3:20 AM', '3:30 AM']
 const reportTimeZone = 'America/New_York'
 const sessionCachePrefix = 'hubspot-call-report'
-const sessionCacheVersion = 'v9'
+const sessionCacheVersion = 'v12'
 const defaultPollIntervalMs = 8000
 const defaultMaxPollingMs = 15 * 60 * 1000
 
@@ -142,12 +142,15 @@ function normalizeHubSpotCall(call) {
     clientName: properties.client_name ?? properties.hs_call_title ?? 'Outbound call',
     clientEmail: properties.clientEmail ?? properties.client_email ?? properties.email ?? '',
     phoneNumber: properties.phone_number ?? properties.hs_call_to_number ?? '',
+    matchPhoneNumbers: properties.matchPhoneNumbers ?? [],
     createdAt: properties.createdAt ?? properties.createdate ?? null,
     callTime: properties.hs_timestamp ?? properties.callTime ?? null,
     callerName: properties.callerName ?? '',
     qualifyingCallers: properties.qualifyingCallers ?? [],
     previousDayCallerName: properties.previousDayCallerName ?? '',
     previousDayCallers: properties.previousDayCallers ?? [],
+    previousDayConnected: Boolean(properties.previousDayConnected)
+      || /\bCONNECTED\b/i.test(String(properties.previousDayCalledDetail ?? '')),
     previousDayCalledDetail: properties.previousDayCalledDetail ?? '',
     called: properties.called ?? '',
     calledDetail: properties.calledDetail ?? '',

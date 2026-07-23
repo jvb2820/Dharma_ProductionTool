@@ -270,19 +270,51 @@ function normalizePhoneDigits(value) {
   return String(value ?? '').replace(/\D/g, '')
 }
 
-function getAppointmentMatchNumbers(row) {
-  const emailLocalPart = String(row.clientEmail ?? '').split('@')[0]
+function normalizePhoneMatchKey(value) {
+  const digits = normalizePhoneDigits(value)
 
-  return [
-    normalizePhoneDigits(emailLocalPart),
-    normalizePhoneDigits(row.phoneNumber),
-  ].filter(Boolean)
+  return digits.length >= 10 ? digits.slice(-10) : digits
+}
+
+function getAppointmentMatchNumbers(row) {
+  const emailLocalPartDigits = normalizePhoneDigits(
+    String(row.clientEmail ?? '').split('@')[0],
+  )
+  const legacyEmailPhone = emailLocalPartDigits.length >= 10
+    ? emailLocalPartDigits
+    : ''
+
+  return [...new Set([
+    normalizePhoneMatchKey(legacyEmailPhone),
+    normalizePhoneMatchKey(row.phoneNumber),
+    ...(row.matchPhoneNumbers ?? []).map(normalizePhoneMatchKey),
+  ].filter(Boolean))]
 }
 
 function getExcelCellValue(row, columnIndex) {
   if (!Array.isArray(row)) return ''
 
   return row[columnIndex] ?? ''
+}
+
+function normalizeExcelHeader(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function findExcelColumnIndex(headerRow, acceptedHeaders) {
+  if (!Array.isArray(headerRow)) return -1
+
+  return headerRow.findIndex((cell) =>
+    acceptedHeaders.includes(normalizeExcelHeader(cell)),
+  )
+}
+
+function isConnectedExcelStatus(value) {
+  return /\bconnected\b|\banswered\b/i.test(String(value ?? ''))
 }
 
 function parseUploadedCallNumbers(fileBuffer) {
@@ -301,17 +333,41 @@ function parseUploadedCallNumbers(fileBuffer) {
       raw: false,
     })
     : []
+  const numberHeaders = [
+    'to',
+    'connected number',
+    'phone number',
+    'destination',
+    'destination number',
+    'callee',
+    'callee number',
+  ]
+  const statusHeaders = [
+    'status',
+    'call status',
+    'disposition',
+    'call disposition',
+    'outcome',
+    'call outcome',
+  ]
   const headerRowIndex = rows.findIndex((row) =>
-    Array.isArray(row) && row.some((cell) =>
-      String(cell ?? '').trim().toLowerCase() === 'to',
-    ),
+    findExcelColumnIndex(row, numberHeaders) >= 0,
   )
-  const toColumnIndex = headerRowIndex >= 0
-    ? rows[headerRowIndex].findIndex((cell) => String(cell ?? '').trim().toLowerCase() === 'to')
-    : 4
+  const headerRow = headerRowIndex >= 0 ? rows[headerRowIndex] : []
+  const detectedNumberColumnIndex = findExcelColumnIndex(headerRow, numberHeaders)
+  const toColumnIndex = detectedNumberColumnIndex >= 0 ? detectedNumberColumnIndex : 4
+  const statusColumnIndex = findExcelColumnIndex(headerRow, statusHeaders)
   const dataRows = headerRowIndex >= 0 ? rows.slice(headerRowIndex + 1) : rows
-  const numbers = dataRows
-    .map((row) => normalizePhoneDigits(getExcelCellValue(row, toColumnIndex)))
+  const connectedRows = statusColumnIndex >= 0
+    ? dataRows.filter((row) =>
+      isConnectedExcelStatus(getExcelCellValue(row, statusColumnIndex)),
+    )
+    : []
+  const rowsToMatch = statusColumnIndex >= 0 && connectedRows.length > 0
+    ? connectedRows
+    : dataRows
+  const numbers = rowsToMatch
+    .map((row) => normalizePhoneMatchKey(getExcelCellValue(row, toColumnIndex)))
     .filter(Boolean)
 
   return new Set(numbers)
@@ -422,8 +478,9 @@ function HubSpotCallReport() {
       const callerName = row.callerName
       const outboundExempt = Boolean(row.outboundExempt)
       const cancelled = isCancelledMeeting(meetingName)
-      const uploadedCallMatched = getAppointmentMatchNumbers(row)
-        .some((phoneNumber) => uploadedCallNumbers.has(phoneNumber))
+      const uploadedMatchedNumber = getAppointmentMatchNumbers(row)
+        .find((phoneNumber) => uploadedCallNumbers.has(phoneNumber)) ?? ''
+      const uploadedCallMatched = Boolean(uploadedMatchedNumber)
       const resolvedCallerName = callerName || (uploadedCallMatched ? 'Uploaded Excel' : '')
 
       return {
@@ -435,6 +492,7 @@ function HubSpotCallReport() {
         clientName: row.clientName,
         clientEmail: row.clientEmail,
         phoneNumber: row.phoneNumber,
+        matchPhoneNumbers: row.matchPhoneNumbers ?? [],
         scheduledAgent: row.scheduledAgent,
         meetingHost: row.meetingHost,
         createdAt: row.createdAt,
@@ -448,12 +506,14 @@ function HubSpotCallReport() {
         ],
         previousDayCallerName: row.previousDayCallerName ?? '',
         previousDayCallers: row.previousDayCallers ?? [],
+        previousDayConnected: Boolean(row.previousDayConnected)
+          || /\bCONNECTED\b/i.test(String(row.previousDayCalledDetail ?? '')),
         previousDayCalledDetail: row.previousDayCalledDetail ?? '',
         called: resolvedCallerName ? 'Called' : outboundExempt ? 'Not Required' : 'Not Called',
         calledDetail: callerName
           ? row.calledDetail || 'Outbound caller found before the appointment'
           : uploadedCallMatched
-            ? 'Matched by uploaded Excel to number'
+            ? `Matched by uploaded Excel to number ending ${uploadedMatchedNumber.slice(-4)}`
           : outboundExempt
             ? row.calledDetail || 'Outbound call not required: meeting was created within 2 hours of the appointment'
             : row.calledDetail || 'No qualifying outbound call found',
@@ -588,8 +648,10 @@ function HubSpotCallReport() {
 
       const meetingHost = agentRows.meetingHosts.get(normalizePersonName(rosterAgentName))
       const callerNames = shouldUseCurrentDayCalling ? row.qualifyingCallers : row.previousDayCallers
-      const previousDayCalledByAssignedCaller = row.uploadedCallMatched || (callerNames ?? [])
-        .some((callerName) => normalizePersonName(callerName) === assignedCallerKey)
+      const previousDayCalledByAssignedCaller = row.uploadedCallMatched
+        || (!shouldUseCurrentDayCalling && row.previousDayConnected)
+        || (callerNames ?? [])
+          .some((callerName) => normalizePersonName(callerName) === assignedCallerKey)
 
       agentRows.totalAppointments += 1
       meetingHost.totalAppointments += 1

@@ -33,7 +33,7 @@ const stripeVerificationCache = new Map()
 let sheetStatusCache = null
 const currentDateCacheTtlMs = 5 * 60 * 1000
 const pastDateCacheTtlMs = 24 * 60 * 60 * 1000
-const callReportCacheVersion = 'contact-call-v7'
+const callReportCacheVersion = 'contact-call-v12'
 const inFlightReports = new Map()
 const inFlightTrackingReports = new Map()
 const reportErrors = new Map()
@@ -1910,28 +1910,96 @@ async function loadContactIdsByCallId(callIds) {
   return contactIdsByCallId
 }
 
-async function loadContactEmailsById(contactIds) {
+async function loadContactIdsByMeetingId(meetingIds) {
+  const normalizedMeetingIds = [...new Set(meetingIds.map((meetingId) => String(meetingId ?? '').trim()).filter(Boolean))]
+  const contactIdsByMeetingId = new Map()
+
+  for (const meetingIdChunk of chunkArray(normalizedMeetingIds, 100)) {
+    const payload = await hubspotFetch('/crm/v4/associations/meetings/contacts/batch/read', {
+      method: 'POST',
+      body: {
+        inputs: meetingIdChunk.map((id) => ({ id })),
+      },
+    })
+
+    ;(payload.results ?? []).forEach((result) => {
+      const meetingId = String(result.from?.id ?? '')
+      const contactIds = (result.to ?? [])
+        .map((association) => String(association.toObjectId ?? ''))
+        .filter(Boolean)
+
+      contactIdsByMeetingId.set(meetingId, contactIds)
+    })
+  }
+
+  return contactIdsByMeetingId
+}
+
+async function loadContactDetailsById(contactIds) {
   const normalizedContactIds = [...new Set(contactIds.map((contactId) => String(contactId ?? '').trim()).filter(Boolean))]
-  const contactEmailsById = new Map()
+  const contactDetailsById = new Map()
 
   for (const contactIdChunk of chunkArray(normalizedContactIds, 100)) {
     const payload = await hubspotFetch('/crm/v3/objects/contacts/batch/read', {
       method: 'POST',
       body: {
-        properties: ['email'],
+        properties: ['email', 'phone', 'mobilephone'],
         inputs: contactIdChunk.map((id) => ({ id })),
       },
     })
 
     ;(payload.results ?? []).forEach((contact) => {
-      const email = normalizeEmail(contact.properties?.email)
-      if (email) {
-        contactEmailsById.set(String(contact.id), email)
-      }
+      const properties = contact.properties ?? {}
+
+      contactDetailsById.set(String(contact.id), {
+        email: normalizeEmail(properties.email),
+        phoneNumbers: [...new Set([
+          normalizePhone(properties.phone),
+          normalizePhone(properties.mobilephone),
+        ].filter(Boolean))],
+      })
     })
   }
 
-  return contactEmailsById
+  return contactDetailsById
+}
+
+async function loadContactDetailsByEmail(emails) {
+  const normalizedEmails = [...new Set(emails.map(normalizeEmail).filter(Boolean))]
+  const contactDetailsByEmail = new Map()
+
+  for (const emailChunk of chunkArray(normalizedEmails, 100)) {
+    const payload = await hubspotFetch('/crm/v3/objects/contacts/search', {
+      method: 'POST',
+      body: {
+        filterGroups: [{
+          filters: [{
+            propertyName: 'email',
+            operator: 'IN',
+            values: emailChunk,
+          }],
+        }],
+        properties: ['email', 'phone', 'mobilephone'],
+        limit: 100,
+      },
+    })
+
+    ;(payload.results ?? []).forEach((contact) => {
+      const properties = contact.properties ?? {}
+      const email = normalizeEmail(properties.email)
+      if (!email) return
+
+      contactDetailsByEmail.set(email, {
+        contactId: String(contact.id),
+        phoneNumbers: [...new Set([
+          normalizePhone(properties.phone),
+          normalizePhone(properties.mobilephone),
+        ].filter(Boolean))],
+      })
+    })
+  }
+
+  return contactDetailsByEmail
 }
 
 function normalizeCall(call, owners) {
@@ -3004,13 +3072,33 @@ async function buildCallReport(selectedDate) {
   ])
   const calls = sortCallsForMatching(outboundCalls.map((call) => normalizeCall(call, owners)))
   const callIndexes = buildCallCandidateIndexes(calls)
-  const contactIdsByCallId = await loadContactIdsByCallId(calls.map((call) => call.callId))
-  const contactEmailsById = await loadContactEmailsById(
-    [...contactIdsByCallId.values()].flat(),
+  const [contactIdsByCallId, contactIdsByMeetingId] = await Promise.all([
+    loadContactIdsByCallId(calls.map((call) => call.callId)),
+    loadContactIdsByMeetingId(scheduleResult.rows.map((meeting) => meeting.id)),
+  ])
+  const contactDetailsById = await loadContactDetailsById(
+    [
+      ...contactIdsByCallId.values(),
+      ...contactIdsByMeetingId.values(),
+    ].flat(),
   )
+  const callsByContactId = calls.reduce((lookup, call) => {
+    const contactIds = contactIdsByCallId.get(String(call.callId)) ?? []
+
+    contactIds.forEach((contactId) => {
+      const contactCalls = lookup.get(contactId) ?? []
+      contactCalls.push(call)
+      lookup.set(contactId, contactCalls)
+    })
+
+    return lookup
+  }, new Map())
+  callsByContactId.forEach((contactCalls, contactId) => {
+    callsByContactId.set(contactId, sortCallsForMatching(contactCalls))
+  })
   const callsByContactEmail = calls.reduce((lookup, call) => {
     const contactEmails = (contactIdsByCallId.get(String(call.callId)) ?? [])
-      .map((contactId) => contactEmailsById.get(String(contactId)))
+      .map((contactId) => contactDetailsById.get(String(contactId))?.email)
       .filter(Boolean)
 
     contactEmails.forEach((email) => {
@@ -3049,11 +3137,32 @@ async function buildCallReport(selectedDate) {
         clientName: meetingDetails.clientName || properties.hs_meeting_title || 'Meeting',
         clientEmail: meetingDetails.clientEmail,
         phoneNumber: meetingDetails.phoneNumber,
+        contactIds: contactIdsByMeetingId.get(String(meeting.id)) ?? [],
       }
     })
+  const contactDetailsByEmail = await loadContactDetailsByEmail(
+    appointmentRows.map((row) => row.clientEmail),
+  )
   const rows = appointmentRows
     .map((row) => {
-      const contactCalls = callsByContactEmail.get(normalizeEmail(row.clientEmail)) ?? []
+      const associatedContactCalls = row.contactIds.flatMap((contactId) =>
+        callsByContactId.get(String(contactId)) ?? [],
+      )
+      const emailContactCalls = callsByContactEmail.get(normalizeEmail(row.clientEmail)) ?? []
+      const contactCalls = sortCallsForMatching(
+        [...new Map(
+          [...associatedContactCalls, ...emailContactCalls]
+            .map((call) => [String(call.callId), call]),
+        ).values()],
+      )
+      const associatedPhoneNumbers = [...new Set(
+        [
+          ...row.contactIds.flatMap((contactId) =>
+            contactDetailsById.get(String(contactId))?.phoneNumbers ?? [],
+          ),
+          ...(contactDetailsByEmail.get(normalizeEmail(row.clientEmail))?.phoneNumbers ?? []),
+        ],
+      )]
       const contactTimelineCall = findPriorOutboundCall(row, contactCalls, {
         requireMeetingMatch: false,
         preSorted: true,
@@ -3077,15 +3186,33 @@ async function buildCallReport(selectedDate) {
         ? previousDayContactCalls
         : previousDayFallbackCalls
       const previousDayCall = previousDayCalls[0]
+      const connectedCallPhoneNumbers = [...new Set(
+        previousDayCalls
+          .filter((call) => call.disposition === 'CONNECTED')
+          .flatMap((call) => [
+            normalizePhone(call.phoneNumber),
+            ...(contactIdsByCallId.get(String(call.callId)) ?? [])
+              .flatMap((contactId) =>
+                contactDetailsById.get(String(contactId))?.phoneNumbers ?? [],
+              ),
+          ])
+          .filter(Boolean),
+      )]
       const appointmentCancelled = isCancelledMeeting(row.meetingName)
       const outboundExempt = isCreatedWithinTwoHoursOfAppointment(row.createdAt, row.scheduledAt)
 
       return {
         ...row,
+        contactIds: undefined,
+        matchPhoneNumbers: [...new Set([
+          ...associatedPhoneNumbers,
+          ...connectedCallPhoneNumbers,
+        ])],
         callerName: matchingCall?.callerName ?? '',
         qualifyingCallers: [...new Set(qualifyingCalls.map((call) => call.callerName).filter(Boolean))],
         previousDayCallerName: previousDayCall?.callerName ?? '',
         previousDayCallers: [...new Set(previousDayCalls.map((call) => call.callerName).filter(Boolean))],
+        previousDayConnected: previousDayCalls.some((call) => call.disposition === 'CONNECTED'),
         previousDayCalledDetail: previousDayCall
           ? `${previousDayContactCalls.length > 0 ? 'Previous day contact timeline' : 'Previous day matched'} ${previousDayCall.disposition || 'outbound call'} at ${displayTime(previousDayCall.callTime)}`
           : 'No previous-day outbound call found',
